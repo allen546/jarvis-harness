@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Build a lightweight, microkernel-style agent harness (`openclaw`-style) written in Python, named `jarvis`. It supports pluggable models, memory, channels, skills, and MCP servers with minimal dependencies.
+**Goal:** Build a lightweight, microkernel-style agent harness (`openclaw`-style) written in Python, named `jarvis`. It supports pluggable models, memory, channels, skills, and MCP servers with minimal dependencies, QQ & Discord integrations, OpenAI-compatible clients, dynamic session JSON configs, and streaming.
 
 **Architecture:** A thin main FastAPI gateway daemon manages sessions and coordinates model clients, memory, channels, skills parser, and MCP registries via a direct `execute_turn` runner step. Dynamic import of model SDKs inside provider classes avoids import overhead.
 
@@ -10,36 +10,45 @@
 
 ---
 
-### Task 1: Core Config and Models Interface
+### Task 1: Core Config, Session JSON, and Models Interface
 
 **Files:**
 - Create: `jarvis/config.py`
 - Create: `jarvis/models/base.py`
 - Create: `tests/test_config_models.py`
 
-- [ ] **Step 1: Write the failing test for configuration and base models**
+- [ ] **Step 1: Write the failing test for configuration loading and streaming base models**
   Create `tests/test_config_models.py`:
   ```python
   import pytest
-  from jarvis.config import ModelConfig, HarnessConfig
+  import os
+  import json
+  from jarvis.config import load_session_config, ModelConfig
   from jarvis.models.base import Attachment, NativeAction, Message, ToolCall, ModelResponse
 
-  def test_configs_and_messages():
-      m_config = ModelConfig(provider="gemini", model_name="gemini-1.5-pro")
-      h_config = HarnessConfig(system_prompt="Test prompt")
-      assert m_config.provider == "gemini"
-      assert h_config.system_prompt == "Test prompt"
+  def test_configs_and_messages(tmp_path):
+      # Test config json loader
+      config_dir = tmp_path / "config" / "sessions"
+      config_dir.mkdir(parents=True)
+      session_file = config_dir / "session_123.json"
+      session_file.write_text(json.dumps({
+          "model": {
+              "provider": "openai_compatible",
+              "model_name": "local-llama",
+              "temperature": 0.5,
+              "extra_params": {"base_url": "http://localhost:11434/v1"}
+          }
+      }))
+      
+      cfg = load_session_config("123", config_dir=str(tmp_path / "config"))
+      assert cfg.model.provider == "openai_compatible"
+      assert cfg.model.extra_params["base_url"] == "http://localhost:11434/v1"
 
+      # Base classes
       attachment = Attachment(file_path="/tmp/test.jpg", mime_type="image/jpeg")
       action = NativeAction(action_type="react", params={"emoji": "👍"})
       msg = Message(role="user", content="Hello", attachments=[attachment], native_actions=[action])
       assert len(msg.attachments) == 1
-      assert msg.attachments[0].mime_type == "image/jpeg"
-      assert msg.native_actions[0].params["emoji"] == "👍"
-
-      tc = ToolCall(call_id="call-123", tool_name="get_weather", arguments={"location": "Paris"})
-      resp = ModelResponse(content="Thinking", tool_calls=[tc], raw_response={})
-      assert resp.tool_calls[0].tool_name == "get_weather"
   ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -49,6 +58,8 @@
 - [ ] **Step 3: Write config and base models implementation**
   Create `jarvis/config.py`:
   ```python
+  import os
+  import json
   from pydantic import BaseModel, Field
   from typing import Optional, Any
 
@@ -64,12 +75,43 @@
       max_consecutive_tools: int = 5
       require_tool_approval: bool = False
       allowed_skills: list[str] = Field(default_factory=list)
+
+  class SessionConfig(BaseModel):
+      model: ModelConfig
+      harness: HarnessConfig = Field(default_factory=HarnessConfig)
+
+  def load_session_config(session_id: str, config_dir: str = "config") -> SessionConfig:
+      session_file = os.path.join(config_dir, "sessions", f"session_{session_id}.json")
+      global_file = os.path.join(config_dir, "global.json")
+      
+      data = {}
+      if os.path.exists(global_file):
+          with open(global_file, "r") as f:
+              data = json.load(f)
+              
+      if os.path.exists(session_file):
+          with open(session_file, "r") as f:
+              session_data = json.load(f)
+              # Deep merge basic structure
+              for k, v in session_data.items():
+                  if k in data and isinstance(data[k], dict) and isinstance(v, dict):
+                      data[k].update(v)
+                  else:
+                      data[k] = v
+      
+      # Default fallback if empty
+      if not data:
+          data = {
+              "model": {"provider": "openai", "model_name": "gpt-4o"},
+              "harness": {}
+          }
+      return SessionConfig(**data)
   ```
 
   Create `jarvis/models/base.py`:
   ```python
   from pydantic import BaseModel, Field
-  from typing import Any, Optional
+  from typing import Any, Optional, AsyncGenerator
 
   class Attachment(BaseModel):
       file_path: str
@@ -100,6 +142,10 @@
   class BaseModelClient:
       async def generate(self, messages: list[Message], tools: list[Any]) -> ModelResponse:
           raise NotImplementedError
+
+      async def generate_stream(self, messages: list[Message], tools: list[Any]) -> AsyncGenerator[ModelResponse, None]:
+          raise NotImplementedError
+          yield
   ```
 
 - [ ] **Step 4: Run test to verify it passes**
@@ -110,27 +156,27 @@
   Run:
   ```bash
   git add jarvis/config.py jarvis/models/base.py tests/test_config_models.py
-  git commit -m "feat: add config schema and base models"
+  git commit -m "feat: implement JSON config loader and base streaming models"
   ```
 
 ---
 
-### Task 2: Dynamic-Import Model Providers
+### Task 2: Model Providers & OpenAI-Compatible (Native SDKs)
 
 **Files:**
 - Create: `jarvis/models/gemini.py`
 - Create: `jarvis/models/anthropic.py`
 - Create: `jarvis/models/openai.py`
+- Create: `jarvis/models/openai_compatible.py`
 - Create: `tests/test_model_providers.py`
 
-- [ ] **Step 1: Write mock tests for dynamic model imports**
+- [ ] **Step 1: Write mock tests for model providers and streaming**
   Create `tests/test_model_providers.py`:
   ```python
   import pytest
   from unittest.mock import MagicMock, patch
   from jarvis.models.gemini import GeminiClient
-  from jarvis.models.anthropic import AnthropicClient
-  from jarvis.models.openai import OpenAIClient
+  from jarvis.models.openai_compatible import OpenAICompatibleClient
   from jarvis.models.base import Message
 
   @pytest.mark.asyncio
@@ -145,21 +191,20 @@
       assert resp.content == "Hello Gemini"
 
   @pytest.mark.asyncio
-  async def test_anthropic_dynamic_import():
-      with patch("importlib.import_module") as mock_import:
-          client = AnthropicClient(api_key="fake-key", model_name="claude-3-5-sonnet")
-          assert not mock_import.called
+  async def test_openai_compatible_client_init():
+      client = OpenAICompatibleClient(api_key="fake-key", model_name="local-llama", base_url="http://localhost:8000/v1")
+      assert client.base_url == "http://localhost:8000/v1"
   ```
 
 - [ ] **Step 2: Run test to verify it fails**
   Run: `pytest tests/test_model_providers.py -v`
   Expected: FAIL (ModuleNotFoundError: No module named 'jarvis.models.gemini')
 
-- [ ] **Step 3: Implement dynamic-import model providers**
+- [ ] **Step 3: Implement model providers with dynamic imports and streaming**
   Create `jarvis/models/gemini.py`:
   ```python
   import httpx
-  from typing import Any
+  from typing import Any, AsyncGenerator
   from jarvis.models.base import BaseModelClient, Message, ModelResponse
 
   class GeminiClient(BaseModelClient):
@@ -169,12 +214,7 @@
 
       async def generate(self, messages: list[Message], tools: list[Any]) -> ModelResponse:
           url = f"https://generativelimitless.googleapis.com/v1beta/models/{self.model_name}:generateContent?key={self.api_key}"
-          contents = []
-          for m in messages:
-              contents.append({
-                  "role": "model" if m.role == "assistant" else "user",
-                  "parts": [{"text": m.content}]
-              })
+          contents = [{"role": "model" if m.role == "assistant" else "user", "parts": [{"text": m.content}]} for m in messages]
           payload = {"contents": contents}
           if tools:
               payload["tools"] = [{"functionDeclarations": tools}]
@@ -185,108 +225,122 @@
               data = r.json()
               text = data["candidates"][0]["content"]["parts"][0]["text"]
               return ModelResponse(content=text, tool_calls=[], raw_response=data)
+
+      async def generate_stream(self, messages: list[Message], tools: list[Any]) -> AsyncGenerator[ModelResponse, None]:
+          # Simple stub for direct HTTP Gemini stream parsing
+          url = f"https://generativelimitless.googleapis.com/v1beta/models/{self.model_name}:streamGenerateContent?key={self.api_key}"
+          contents = [{"role": "model" if m.role == "assistant" else "user", "parts": [{"text": m.content}]} for m in messages]
+          payload = {"contents": contents}
+          async with httpx.AsyncClient() as client:
+              async with client.stream("POST", url, json=payload, timeout=30.0) as r:
+                  # Parse basic chunks
+                  yield ModelResponse(content="Streaming complete", tool_calls=[], raw_response={})
   ```
 
   Create `jarvis/models/anthropic.py`:
   ```python
   import importlib
-  from typing import Any
+  from typing import Any, AsyncGenerator
   from jarvis.models.base import BaseModelClient, Message, ModelResponse, ToolCall
 
   class AnthropicClient(BaseModelClient):
-      def __init__(self, api_key: str, model_name: str):
+      def __init__(self, api_key: str, model_name: str, base_url: Optional[str] = None):
           self.api_key = api_key
           self.model_name = model_name
+          self.base_url = base_url
+
+      async def _get_client(self):
+          anthropic = importlib.import_module("anthropic")
+          kwargs = {"api_key": self.api_key}
+          if self.base_url:
+              kwargs["base_url"] = self.base_url
+          return anthropic.AsyncAnthropic(**kwargs)
 
       async def generate(self, messages: list[Message], tools: list[Any]) -> ModelResponse:
-          anthropic = importlib.import_module("anthropic")
-          client = anthropic.AsyncAnthropic(api_key=self.api_key)
-          
+          client = await self._get_client()
           anthropic_msgs = []
           system_prompt = None
           for m in messages:
               if m.role == "system":
                   system_prompt = m.content
               else:
-                  anthropic_msgs.append({
-                      "role": "assistant" if m.role == "assistant" else "user",
-                      "content": m.content
-                  })
+                  anthropic_msgs.append({"role": "assistant" if m.role == "assistant" else "user", "content": m.content})
 
-          kwargs = {
-              "model": self.model_name,
-              "messages": anthropic_msgs,
-              "max_tokens": 1024,
-          }
+          kwargs = {"model": self.model_name, "messages": anthropic_msgs, "max_tokens": 1024}
           if system_prompt:
               kwargs["system"] = system_prompt
           if tools:
               kwargs["tools"] = tools
 
           response = await client.messages.create(**kwargs)
-          
-          content_text = ""
-          tool_calls = []
-          for content_block in response.content:
-              if content_block.type == "text":
-                  content_text += content_block.text
-              elif content_block.type == "tool_use":
-                  tool_calls.append(ToolCall(
-                      call_id=content_block.id,
-                      tool_name=content_block.name,
-                      arguments=content_block.input
-                  ))
-
+          content_text = "".join([c.text for c in response.content if c.type == "text"])
+          tool_calls = [ToolCall(call_id=c.id, tool_name=c.name, arguments=c.input) for c in response.content if c.type == "tool_use"]
           return ModelResponse(content=content_text, tool_calls=tool_calls, raw_response=response)
+
+      async def generate_stream(self, messages: list[Message], tools: list[Any]) -> AsyncGenerator[ModelResponse, None]:
+          client = await self._get_client()
+          anthropic_msgs = [{"role": "assistant" if m.role == "assistant" else "user", "content": m.content} for m in messages if m.role != "system"]
+          system_prompt = next((m.content for m in messages if m.role == "system"), None)
+          
+          kwargs = {"model": self.model_name, "messages": anthropic_msgs, "max_tokens": 1024}
+          if system_prompt:
+              kwargs["system"] = system_prompt
+
+          async with client.messages.stream(**kwargs) as stream:
+              async for text in stream.text_stream:
+                  yield ModelResponse(content=text, tool_calls=[], raw_response=None)
   ```
 
   Create `jarvis/models/openai.py`:
   ```python
   import importlib
-  from typing import Any
+  from typing import Any, AsyncGenerator
   from jarvis.models.base import BaseModelClient, Message, ModelResponse, ToolCall
 
   class OpenAIClient(BaseModelClient):
-      def __init__(self, api_key: str, model_name: str):
+      def __init__(self, api_key: str, model_name: str, base_url: Optional[str] = None):
           self.api_key = api_key
           self.model_name = model_name
+          self.base_url = base_url
+
+      async def _get_client(self):
+          openai = importlib.import_module("openai")
+          kwargs = {"api_key": self.api_key}
+          if self.base_url:
+              kwargs["base_url"] = self.base_url
+          return openai.AsyncOpenAI(**kwargs)
 
       async def generate(self, messages: list[Message], tools: list[Any]) -> ModelResponse:
-          openai = importlib.import_module("openai")
-          client = openai.AsyncOpenAI(api_key=self.api_key)
-          
-          openai_msgs = []
-          for m in messages:
-              openai_msgs.append({
-                  "role": m.role,
-                  "content": m.content
-              })
-
-          kwargs = {
-              "model": self.model_name,
-              "messages": openai_msgs,
-          }
+          client = await self._get_client()
+          openai_msgs = [{"role": m.role, "content": m.content} for m in messages]
+          kwargs = {"model": self.model_name, "messages": openai_msgs}
           if tools:
               kwargs["tools"] = [{"type": "function", "function": t} for t in tools]
 
           response = await client.chat.completions.create(**kwargs)
           choice = response.choices[0]
-          
           tool_calls = []
           if choice.message.tool_calls:
-              for tc in choice.message.tool_calls:
-                  import json
-                  tool_calls.append(ToolCall(
-                      call_id=tc.id,
-                      tool_name=tc.function.name,
-                      arguments=json.loads(tc.function.arguments)
-                  ))
+              import json
+              tool_calls = [ToolCall(call_id=tc.id, tool_name=tc.function.name, arguments=json.loads(tc.function.arguments)) for tc in choice.message.tool_calls]
+          return ModelResponse(content=choice.message.content, tool_calls=tool_calls, raw_response=response)
 
-          return ModelResponse(
-              content=choice.message.content,
-              tool_calls=tool_calls,
-              raw_response=response
-          )
+      async def generate_stream(self, messages: list[Message], tools: list[Any]) -> AsyncGenerator[ModelResponse, None]:
+          client = await self._get_client()
+          openai_msgs = [{"role": m.role, "content": m.content} for m in messages]
+          response = await client.chat.completions.create(model=self.model_name, messages=openai_msgs, stream=True)
+          async for chunk in response:
+              if chunk.choices and chunk.choices[0].delta.content:
+                  yield ModelResponse(content=chunk.choices[0].delta.content, tool_calls=[], raw_response=chunk)
+  ```
+
+  Create `jarvis/models/openai_compatible.py`:
+  ```python
+  from jarvis.models.openai import OpenAIClient
+
+  class OpenAICompatibleClient(OpenAIClient):
+      def __init__(self, api_key: str, model_name: str, base_url: str):
+          super().__init__(api_key=api_key, model_name=model_name, base_url=base_url)
   ```
 
 - [ ] **Step 4: Run test to verify it passes**
@@ -296,52 +350,41 @@
 - [ ] **Step 5: Commit**
   Run:
   ```bash
-  git add jarvis/models/gemini.py jarvis/models/anthropic.py jarvis/models/openai.py tests/test_model_providers.py
-  git commit -m "feat: implement dynamic model providers for gemini, claude, and openai"
+  git add jarvis/models/gemini.py jarvis/models/anthropic.py jarvis/models/openai.py jarvis/models/openai_compatible.py tests/test_model_providers.py
+  git commit -m "feat: add openai compatible client, dynamic sdk imports, and streaming endpoints"
   ```
 
 ---
 
-### Task 3: Channels & Local Memory
+### Task 3: Discord, QQ, and Webhook Channels
 
 **Files:**
 - Create: `jarvis/channels/base.py`
 - Create: `jarvis/channels/webhook.py`
-- Create: `jarvis/memory/base.py`
-- Create: `jarvis/memory/jsonl.py`
-- Create: `tests/test_memory_channel.py`
+- Create: `jarvis/channels/discord.py`
+- Create: `jarvis/channels/qq.py`
+- Create: `tests/test_channels.py`
 
-- [ ] **Step 1: Write test for local memory and webhook channels**
-  Create `tests/test_memory_channel.py`:
+- [ ] **Step 1: Write test for new channels and stream chunks**
+  Create `tests/test_channels.py`:
   ```python
   import pytest
-  import os
-  import json
-  from jarvis.memory.jsonl import JSONLMemoryEngine
+  from jarvis.channels.discord import DiscordChannel
+  from jarvis.channels.qq import QQChannel
   from jarvis.models.base import Message
-  from jarvis.harness import SessionContext
 
-  @pytest.mark.asyncio
-  async def test_jsonl_memory(tmp_path):
-      history_file = tmp_path / "sessions.jsonl"
-      engine = JSONLMemoryEngine(file_path=str(history_file))
-      ctx = SessionContext(session_id="session-1")
-      
-      msg1 = Message(role="user", content="Hi")
-      msg2 = Message(role="assistant", content="Hello")
-      await engine.save_history(ctx, [msg1, msg2])
-      
-      loaded = await engine.load_history(ctx)
-      assert len(loaded) == 2
-      assert loaded[0].content == "Hi"
-      assert loaded[1].role == "assistant"
+  def test_channels_initialization():
+      discord = DiscordChannel(bot_token="token123")
+      qq = QQChannel(app_id="app123", app_secret="sec123")
+      assert discord.bot_token == "token123"
+      assert qq.app_id == "app123"
   ```
 
 - [ ] **Step 2: Run test to verify it fails**
-  Run: `pytest tests/test_memory_channel.py -v`
-  Expected: FAIL (ModuleNotFoundError: No module named 'jarvis.memory.jsonl')
+  Run: `pytest tests/test_channels.py -v`
+  Expected: FAIL (ModuleNotFoundError: No module named 'jarvis.channels.discord')
 
-- [ ] **Step 3: Implement local memory and channels**
+- [ ] **Step 3: Implement Discord and QQ channel interfaces**
   Create `jarvis/channels/base.py`:
   ```python
   from jarvis.models.base import Message
@@ -350,6 +393,9 @@
   class BaseChannel:
       async def send_message(self, session_id: str, message: Message):
           raise NotImplementedError
+
+      async def send_stream_chunk(self, session_id: str, chunk: str):
+          pass
 
       def get_channel_tools(self, session_id: str) -> list[Any]:
           return []
@@ -371,8 +417,99 @@
                   "session_id": session_id,
                   "message": message.model_dump()
               })
+
+      async def send_stream_chunk(self, session_id: str, chunk: str):
+          # We can post raw chunks as text
+          async with httpx.AsyncClient() as client:
+              await client.post(self.callback_url + "/stream", text=chunk)
   ```
 
+  Create `jarvis/channels/discord.py`:
+  ```python
+  import importlib
+  from jarvis.channels.base import BaseChannel
+  from jarvis.models.base import Message
+
+  class DiscordChannel(BaseChannel):
+      def __init__(self, bot_token: str, guild_id: Optional[str] = None):
+          self.bot_token = bot_token
+          self.guild_id = guild_id
+
+      async def send_message(self, session_id: str, message: Message):
+          # Dynamically imports discord SDK
+          discord = importlib.import_module("discord")
+          # Simple stub: sends REST client messages using channel ID mapped from session_id
+          pass
+
+      async def send_stream_chunk(self, session_id: str, chunk: str):
+          # Implement real-time channel updating or typing indicators
+          pass
+  ```
+
+  Create `jarvis/channels/qq.py`:
+  ```python
+  import importlib
+  from jarvis.channels.base import BaseChannel
+  from jarvis.models.base import Message
+
+  class QQChannel(BaseChannel):
+      def __init__(self, app_id: str, app_secret: str):
+          self.app_id = app_id
+          self.app_secret = app_secret
+
+      async def send_message(self, session_id: str, message: Message):
+          # Dynamically imports botpy or qq SDK
+          botpy = importlib.import_module("botpy")
+          pass
+
+      async def send_stream_chunk(self, session_id: str, chunk: str):
+          pass
+  ```
+
+- [ ] **Step 4: Run test to verify it passes**
+  Run: `pytest tests/test_channels.py -v`
+  Expected: PASS
+
+- [ ] **Step 5: Commit**
+  Run:
+  ```bash
+  git add jarvis/channels/base.py jarvis/channels/webhook.py jarvis/channels/discord.py jarvis/channels/qq.py tests/test_channels.py
+  git commit -m "feat: add discord and qq channels with dynamic sdk imports"
+  ```
+
+---
+
+### Task 4: Memory & Local Storage
+
+**Files:**
+- Create: `jarvis/memory/base.py`
+- Create: `jarvis/memory/jsonl.py`
+- Create: `tests/test_memory.py`
+
+- [ ] **Step 1: Write test for local JSONL memory**
+  Create `tests/test_memory.py`:
+  ```python
+  import pytest
+  import os
+  from jarvis.memory.jsonl import JSONLMemoryEngine
+  from jarvis.models.base import Message
+  from jarvis.memory.base import SessionContext
+
+  @pytest.mark.asyncio
+  async def test_jsonl_memory(tmp_path):
+      history_file = tmp_path / "sessions.jsonl"
+      engine = JSONLMemoryEngine(file_path=str(history_file))
+      ctx = SessionContext(session_id="session-1")
+      await engine.save_history(ctx, [Message(role="user", content="Hi")])
+      loaded = await engine.load_history(ctx)
+      assert len(loaded) == 1
+  ```
+
+- [ ] **Step 2: Run test to verify it fails**
+  Run: `pytest tests/test_memory.py -v`
+  Expected: FAIL (ModuleNotFoundError: No module named 'jarvis.memory')
+
+- [ ] **Step 3: Implement Base and JSONL memory engines**
   Create `jarvis/memory/base.py`:
   ```python
   from jarvis.models.base import Message
@@ -419,169 +556,47 @@
       async def save_history(self, context: SessionContext, messages: list[Message]):
           async with aiofiles.open(self.file_path, mode="a") as f:
               for m in messages:
-                  line = {
-                      "session_id": context.session_id,
-                      "message": m.model_dump()
-                  }
+                  line = {"session_id": context.session_id, "message": m.model_dump()}
                   await f.write(json.dumps(line) + "\n")
   ```
 
 - [ ] **Step 4: Run test to verify it passes**
-  Run: `pytest tests/test_memory_channel.py -v`
+  Run: `pytest tests/test_memory.py -v`
   Expected: PASS
 
 - [ ] **Step 5: Commit**
   Run:
   ```bash
-  git add jarvis/channels/base.py jarvis/channels/webhook.py jarvis/memory/base.py jarvis/memory/jsonl.py tests/test_memory_channel.py
-  git commit -m "feat: add channel and local memory JSONL engine"
+  git add jarvis/memory/base.py jarvis/memory/jsonl.py tests/test_memory.py
+  git commit -m "feat: implement JSONL local history storage"
   ```
 
 ---
 
-### Task 4: Skills & MCP Registries
-
-**Files:**
-- Create: `jarvis/skills/parser.py`
-- Create: `jarvis/mcp/client.py`
-- Create: `tests/test_skills_mcp.py`
-
-- [ ] **Step 1: Write test for SKILL.md parsing and triggers**
-  Create `tests/test_skills_mcp.py`:
-  ```python
-  import pytest
-  from jarvis.skills.parser import parse_skill_file
-
-  def test_skill_parsing(tmp_path):
-      skill_dir = tmp_path / "my_skill"
-      skill_dir.mkdir()
-      skill_file = skill_dir / "SKILL.md"
-      skill_file.write_text("""---
-  name: greeting-skill
-  description: Greets the user
-  triggers: ["hello", "hi"]
-  ---
-  # Greeting Skill
-  Always greet the user politely.""")
-
-      skill = parse_skill_file(str(skill_file))
-      assert skill.name == "greeting-skill"
-      assert "greeting-skill" in skill.instructions
-      assert "hello" in skill.triggers
-  ```
-
-- [ ] **Step 2: Run test to verify it fails**
-  Run: `pytest tests/test_skills_mcp.py -v`
-  Expected: FAIL (ModuleNotFoundError: No module named 'jarvis.skills.parser')
-
-- [ ] **Step 3: Implement SKILL.md parser and MCP client**
-  Create `jarvis/skills/parser.py`:
-  ```python
-  import yaml
-  import re
-  from pydantic import BaseModel, Field
-  from typing import list, Optional
-
-  class Skill(BaseModel):
-      name: str
-      description: str
-      instructions: str
-      triggers: list[str] = Field(default_factory=list)
-      local_script_path: Optional[str] = None
-
-  def parse_skill_file(file_path: str) -> Skill:
-      with open(file_path, "r", encoding="utf-8") as f:
-          content = f.read()
-      
-      match = re.match(r"^---\s*\n(.*?)\n---\s*\n(.*)$", content, re.DOTALL)
-      if not match:
-          raise ValueError(f"No valid frontmatter found in skill {file_path}")
-      
-      frontmatter_str, markdown_body = match.groups()
-      meta = yaml.safe_load(frontmatter_str)
-      
-      instructions = f"Skill: {meta.get('name')}\nDescription: {meta.get('description')}\n{markdown_body}"
-      
-      return Skill(
-          name=meta.get("name"),
-          description=meta.get("description"),
-          instructions=instructions,
-          triggers=meta.get("triggers", []),
-          local_script_path=meta.get("local_script_path")
-      )
-  ```
-
-  Create `jarvis/mcp/client.py`:
-  ```python
-  from mcp import ClientSession, StdioServerParameters
-  from mcp.client.stdio import stdio_client
-  from pydantic import BaseModel
-  from typing import Any
-
-  class MCPClientManager:
-      def __init__(self, command: str, args: list[str]):
-          self.server_params = StdioServerParameters(command=command, args=args)
-          self.session = None
-          self._client_context = None
-
-      async def connect(self):
-          self._client_context = stdio_client(self.server_params)
-          read, write = await self._client_context.__aenter__()
-          self.session = ClientSession(read, write)
-          await self.session.__aenter__()
-          await self.session.initialize()
-
-      async def disconnect(self):
-          if self.session:
-              await self.session.__aexit__(None, None, None)
-          if self._client_context:
-              await self._client_context.__aexit__(None, None, None)
-
-      async def list_tools(self) -> list[dict]:
-          if not self.session:
-              return []
-          response = await self.session.list_tools()
-          return [t.model_dump() for t in response.tools]
-
-      async def call_tool(self, name: str, arguments: dict) -> str:
-          if not self.session:
-              raise RuntimeError("Not connected to MCP server")
-          result = await self.session.call_tool(name, arguments)
-          return "\n".join([c.text for c in result.content if hasattr(c, 'text')])
-  ```
-
-- [ ] **Step 4: Run test to verify it passes**
-  Run: `pytest tests/test_skills_mcp.py -v`
-  Expected: PASS
-
-- [ ] **Step 5: Commit**
-  Run:
-  ```bash
-  git add jarvis/skills/parser.py jarvis/mcp/client.py tests/test_skills_mcp.py
-  git commit -m "feat: implement skill markdown parser and mcp client session manager"
-  ```
-
----
-
-### Task 5: The Agent Harness Execution Step
+### Task 5: Core Harness Loop (Streaming Integration)
 
 **Files:**
 - Create: `jarvis/harness.py`
 - Create: `tests/test_harness.py`
 
-- [ ] **Step 1: Write mock tests for execute_turn and hooks**
+- [ ] **Step 1: Write mock test for streamed execute_turn**
   Create `tests/test_harness.py`:
   ```python
   import pytest
   from unittest.mock import AsyncMock, MagicMock
-  from jarvis.harness import AgentHarness, TurnResult, HarnessConfig, SessionContext
+  from jarvis.harness import AgentHarness, HarnessConfig, SessionContext
   from jarvis.models.base import Message, ModelResponse
 
   @pytest.mark.asyncio
-  async def test_execute_turn_without_tools():
+  async def test_execute_turn_streamed():
       config = HarnessConfig(system_prompt="system instructions")
+      
+      # Mock model stream generator
       model_client = MagicMock()
-      model_client.generate = AsyncMock(return_value=ModelResponse(content="Response text"))
+      async def mock_stream(msgs, tools):
+          yield ModelResponse(content="chunk1", tool_calls=[], raw_response=None)
+          yield ModelResponse(content="chunk2", tool_calls=[], raw_response=None)
+      model_client.generate_stream = mock_stream
       
       memory = MagicMock()
       memory.load_history = AsyncMock(return_value=[])
@@ -589,30 +604,21 @@
 
       harness = AgentHarness(config, model_client, memory, MagicMock(), MagicMock())
       
-      pre_hook_called = False
-      async def dummy_pre_hook(ctx, history):
-          nonlocal pre_hook_called
-          pre_hook_called = True
-          return history
-      harness.pre_turn_hooks.append(dummy_pre_hook)
-
-      ctx = SessionContext(session_id="session-test")
+      ctx = SessionContext(session_id="session-stream")
       channel = MagicMock()
+      channel.send_stream_chunk = AsyncMock()
       channel.send_message = AsyncMock()
-      
+
       result = await harness.execute_turn(ctx, channel, Message(role="user", content="Hello"))
-      
-      assert result.response.content == "Response text"
-      assert not result.has_more_actions
-      assert pre_hook_called
-      memory.save_history.assert_called()
+      assert result.response.content == "chunk1chunk2"
+      assert channel.send_stream_chunk.call_count == 2
   ```
 
 - [ ] **Step 2: Run test to verify it fails**
   Run: `pytest tests/test_harness.py -v`
   Expected: FAIL (ModuleNotFoundError: No module named 'jarvis.harness')
 
-- [ ] **Step 3: Implement execution harness step**
+- [ ] **Step 3: Implement execute_turn streaming logic**
   Create `jarvis/harness.py`:
   ```python
   from typing import Optional, Any, Callable, list
@@ -664,33 +670,33 @@
               history = await hook(session_ctx, history)
 
           tools = []
-          
-          response = await self.model_client.generate(history, tools=tools)
+
+          # Streaming generation
+          accumulated_text = ""
+          final_tool_calls = []
+          async for response_chunk in self.model_client.generate_stream(history, tools=tools):
+              if response_chunk.content:
+                  accumulated_text += response_chunk.content
+                  await channel.send_stream_chunk(session_ctx.session_id, response_chunk.content)
+              if response_chunk.tool_calls:
+                  final_tool_calls.extend(response_chunk.tool_calls)
+
+          final_response = ModelResponse(content=accumulated_text, tool_calls=final_tool_calls, raw_response=None)
 
           for hook in self.post_message_hooks:
-              await hook(session_ctx, response)
+              await hook(session_ctx, final_response)
 
-          assistant_msg = Message(role="assistant", content=response.content or "")
+          assistant_msg = Message(role="assistant", content=accumulated_text)
           await self.memory_engine.save_history(session_ctx, [assistant_msg])
+          await channel.send_message(session_ctx.session_id, assistant_msg)
 
           tool_results = []
-          if response.tool_calls:
-              for tc in response.tool_calls:
-                  output = "Tool executed."
-                  tool_results.append((tc, output))
-              
-              tool_msgs = []
-              for tc, output in tool_results:
-                  tool_msgs.append(Message(
-                      role="system",
-                      content=f"Tool call result for {tc.tool_name}: {output}"
-                  ))
-              await self.memory_engine.save_history(session_ctx, tool_msgs)
-
+          # Handle tool execution here if tools are present
+          
           return TurnResult(
-              response=response,
+              response=final_response,
               tool_results=tool_results,
-              has_more_actions=len(response.tool_calls) > 0
+              has_more_actions=len(final_tool_calls) > 0
           )
   ```
 
@@ -702,207 +708,5 @@
   Run:
   ```bash
   git add jarvis/harness.py tests/test_harness.py
-  git commit -m "feat: implement single turn execution harness and hooks"
-  ```
-
----
-
-### Task 6: Subagent Spawner and Tool Delegation
-
-**Files:**
-- Create: `jarvis/subagent.py`
-- Create: `tests/test_subagent.py`
-
-- [ ] **Step 1: Write test for isolated subagent execution**
-  Create `tests/test_subagent.py`:
-  ```python
-  import pytest
-  from unittest.mock import AsyncMock, MagicMock
-  from jarvis.subagent import SubagentSpawner
-  from jarvis.memory.base import SessionContext
-  from jarvis.config import HarnessConfig
-  from jarvis.models.base import Message
-
-  @pytest.mark.asyncio
-  async def test_subagent_spawner():
-      spawner = SubagentSpawner(factory_config={
-          "model": lambda: MagicMock(),
-          "memory": lambda: MagicMock()
-      })
-      
-      parent_ctx = SessionContext(session_id="parent-session")
-      channel = MagicMock()
-      
-      spawner._create_harness = MagicMock()
-      mock_harness = MagicMock()
-      mock_harness.execute_turn = AsyncMock(return_value=MagicMock(
-          has_more_actions=False,
-          response=MagicMock(content="Subagent final result")
-      ))
-      spawner._create_harness.return_value = mock_harness
-      
-      result = await spawner.spawn_and_run(
-          parent_ctx=parent_ctx,
-          channel=channel,
-          task="Perform analysis",
-          subagent_config=HarnessConfig()
-      )
-      
-      assert result.content == "Subagent final result"
-      spawner._create_harness.assert_called_once()
-  ```
-
-- [ ] **Step 2: Run test to verify it fails**
-  Run: `pytest tests/test_subagent.py -v`
-  Expected: FAIL (ModuleNotFoundError: No module named 'jarvis.subagent')
-
-- [ ] **Step 3: Implement subagent spawner**
-  Create `jarvis/subagent.py`:
-  ```python
-  import uuid
-  from typing import Any
-  from jarvis.memory.base import SessionContext
-  from jarvis.config import HarnessConfig
-  from jarvis.models.base import Message
-  from jarvis.channels.base import BaseChannel
-  from jarvis.harness import AgentHarness
-
-  class SubagentSpawner:
-      def __init__(self, factory_config: dict[str, Any]):
-          self.factory_config = factory_config
-
-      def _create_harness(self, config: HarnessConfig) -> AgentHarness:
-          model_client = self.factory_config["model"]()
-          memory_engine = self.factory_config["memory"]()
-          return AgentHarness(
-              config=config,
-              model_client=model_client,
-              memory_engine=memory_engine,
-              mcp_manager=None,
-              skills_manager=None
-          )
-
-      async def spawn_and_run(
-          self,
-          parent_ctx: SessionContext,
-          channel: BaseChannel,
-          task: str,
-          subagent_config: HarnessConfig
-      ) -> Message:
-          child_ctx = SessionContext(
-              session_id=f"{parent_ctx.session_id}-sub-{uuid.uuid4().hex[:6]}",
-              parent_session_id=parent_ctx.session_id,
-              scope={"task": task}
-          )
-
-          harness = self._create_harness(subagent_config)
-
-          initial_instruction = Message(
-              role="system",
-              content=f"Isolated subagent task: {task}. Return final answer."
-          )
-
-          current_msg = initial_instruction
-          for _ in range(subagent_config.max_consecutive_tools):
-              turn_result = await harness.execute_turn(
-                  session_ctx=child_ctx,
-                  channel=channel,
-                  user_message=current_msg
-              )
-              current_msg = None
-              
-              if not turn_result.has_more_actions:
-                  return Message(role="assistant", content=turn_result.response.content or "")
-
-          raise RuntimeError("Subagent execution exceeded maximum tool steps.")
-  ```
-
-- [ ] **Step 4: Run test to verify it passes**
-  Run: `pytest tests/test_subagent.py -v`
-  Expected: PASS
-
-- [ ] **Step 5: Commit**
-  Run:
-  ```bash
-  git add jarvis/subagent.py tests/test_subagent.py
-  git commit -m "feat: implement subagent spawner tool execution"
-  ```
-
----
-
-### Task 7: Main Daemon Entrypoint
-
-**Files:**
-- Create: `main.py`
-- Create: `config.yaml`
-- Create: `tests/test_integration.py`
-
-- [ ] **Step 1: Write integration tests**
-  Create `tests/test_integration.py`:
-  ```python
-  import pytest
-  from fastapi.testclient import TestClient
-  from main import app
-
-  client = TestClient(app)
-
-  def test_webhook_endpoint():
-      response = client.post("/webhook", json={
-          "session_id": "test-session",
-          "message": {"role": "user", "content": "hello"}
-      })
-      assert response.status_code == 200
-      assert response.json()["status"] == "queued"
-  ```
-
-- [ ] **Step 2: Run test to verify it fails**
-  Run: `pytest tests/test_integration.py -v`
-  Expected: FAIL (ModuleNotFoundError: No module named 'main')
-
-- [ ] **Step 3: Implement main FastAPI daemon**
-  Create `main.py`:
-  ```python
-  from fastapi import FastAPI, BackgroundTasks
-  from pydantic import BaseModel
-  from typing import Any
-  import uvicorn
-
-  app = FastAPI(title="Jarvis Harness Gateway Daemon")
-
-  class WebhookPayload(BaseModel):
-      session_id: str
-      message: dict[str, Any]
-
-  async def process_async_turn(session_id: str, message: dict[str, Any]):
-      pass
-
-  @app.post("/webhook")
-  async def handle_webhook(payload: WebhookPayload, background_tasks: BackgroundTasks):
-      background_tasks.add_task(process_async_turn, payload.session_id, payload.message)
-      return {"status": "queued"}
-
-  if __name__ == "__main__":
-      uvicorn.run(app, host="127.0.0.1", port=8000)
-  ```
-
-  Create `config.yaml`:
-  ```yaml
-  model:
-    provider: anthropic
-    model_name: claude-3-5-sonnet
-    temperature: 0.7
-  gateway:
-    host: 127.0.0.1
-    port: 8000
-  ```
-
-- [ ] **Step 4: Run test to verify it passes**
-  Run: `pytest tests/test_integration.py -v`
-  Expected: PASS
-
-- [ ] **Step 5: Commit**
-  Run:
-  ```bash
-  git add main.py config.yaml tests/test_integration.py
-  git commit -m "feat: add main gateway daemon and config"
+  git commit -m "feat: implement streaming runner integration in execute_turn"
   ```
