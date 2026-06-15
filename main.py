@@ -21,6 +21,8 @@ from jarvis.channels.base import QueueChannel
 from jarvis.channels.webhook import WebhookChannel
 from jarvis.channels.discord import DiscordChannel
 from jarvis.channels.qq import QQChannel
+from jarvis.channels.cli import CLIChannel
+
 
 app = FastAPI(title="Jarvis Daemon Gateway")
 
@@ -89,8 +91,11 @@ def instantiate_channel(channel_name: str, params: Optional[Dict[str, Any]]):
         if not app_id or not app_secret:
             raise ValueError("app_id and app_secret are required for qq channel")
         return QQChannel(app_id=app_id, app_secret=app_secret)
+    elif name == "cli":
+        return CLIChannel()
     else:
         raise ValueError(f"Unknown channel: {channel_name}")
+
 
 
 async def run_turn_sse(harness: AgentHarness, session_ctx: SessionContext, channel: QueueChannel, user_message: Message):

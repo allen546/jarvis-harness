@@ -13,3 +13,21 @@ def test_channels_initialization():
     assert qq.filter_content("Now let me read main.py: Hello!") == "Hello!"
     # Test content filtering on Discord (should preserve the thoughts)
     assert discord.filter_content("Now let me read main.py: Hello!") == "Now let me read main.py: Hello!"
+
+@pytest.mark.asyncio
+async def test_cli_channel(capsys):
+    from jarvis.channels.cli import CLIChannel
+    
+    channel = CLIChannel()
+    await channel.send_stream_chunk("session1", "Hello ")
+    await channel.send_stream_chunk("session1", "World")
+    
+    captured = capsys.readouterr()
+    assert captured.out == "Hello World"
+    
+    msg = Message(role="assistant", content="ignored")
+    await channel.send_message("session1", msg)
+    
+    captured = capsys.readouterr()
+    assert captured.out == "\n"
+
