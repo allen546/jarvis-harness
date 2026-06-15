@@ -24,6 +24,9 @@ from jarvis.channels.qq import QQChannel
 
 app = FastAPI(title="Jarvis Daemon Gateway")
 
+# Keep strong references to running background tasks to prevent GC mid-execution
+running_tasks: set[asyncio.Task] = set()
+
 class TurnRequest(BaseModel):
     content: str
     channel: str
@@ -71,13 +74,31 @@ def instantiate_channel(channel_name: str, params: Optional[Dict[str, Any]]):
     if name == "sse":
         return QueueChannel()
     elif name == "webhook":
-        return WebhookChannel(callback_url=params.get("callback_url"))
+        callback_url = params.get("callback_url")
+        if not callback_url:
+            raise ValueError("callback_url is required for webhook channel")
+        return WebhookChannel(callback_url=callback_url)
     elif name == "discord":
-        return DiscordChannel(bot_token=params.get("bot_token"), guild_id=params.get("guild_id"))
+        bot_token = params.get("bot_token")
+        if not bot_token:
+            raise ValueError("bot_token is required for discord channel")
+        return DiscordChannel(bot_token=bot_token, guild_id=params.get("guild_id"))
     elif name == "qq":
-        return QQChannel(app_id=params.get("app_id"), app_secret=params.get("app_secret"))
+        app_id = params.get("app_id")
+        app_secret = params.get("app_secret")
+        if not app_id or not app_secret:
+            raise ValueError("app_id and app_secret are required for qq channel")
+        return QQChannel(app_id=app_id, app_secret=app_secret)
     else:
         raise ValueError(f"Unknown channel: {channel_name}")
+
+
+async def run_turn_sse(harness: AgentHarness, session_ctx: SessionContext, channel: QueueChannel, user_message: Message):
+    try:
+        await harness.execute_turn(session_ctx, channel, user_message)
+    finally:
+        # Guarantee queue completion to prevent infinite hangs
+        await channel.queue.put(None)
 
 @app.post("/sessions/{session_id}/turns")
 async def execute_session_turn(session_id: str, request: TurnRequest):
@@ -95,14 +116,18 @@ async def execute_session_turn(session_id: str, request: TurnRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to instantiate model client: {str(e)}")
 
-    # 3. Instantiate JSONLMemoryEngine dynamically per session
-    memory_engine = JSONLMemoryEngine(file_path=f"history_{session_id}.jsonl")
+    # 3. Instantiate JSONLMemoryEngine dynamically per session using optional history directory
+    history_dir = os.getenv("JARVIS_HISTORY_DIR", "")
+    if history_dir:
+        os.makedirs(history_dir, exist_ok=True)
+    history_path = os.path.join(history_dir, f"history_{session_id}.jsonl") if history_dir else f"history_{session_id}.jsonl"
+    memory_engine = JSONLMemoryEngine(file_path=history_path)
 
-    # 4. Instantiate channel
+    # 4. Instantiate channel and catch bad input parameters
     try:
         channel = instantiate_channel(request.channel, request.channel_params)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    except (ValueError, TypeError, KeyError) as e:
+        raise HTTPException(status_code=400, detail=f"Invalid channel or parameters: {str(e)}")
 
     # 5. Prepare SessionContext and Message
     session_ctx = SessionContext(session_id=session_id)
@@ -119,10 +144,14 @@ async def execute_session_turn(session_id: str, request: TurnRequest):
 
     if request.channel.lower() == "sse":
         # Create background task for executing the turn
-        task = asyncio.create_task(harness.execute_turn(session_ctx, channel, user_message))
+        task = asyncio.create_task(run_turn_sse(harness, session_ctx, channel, user_message))
+        running_tasks.add(task)
+        task.add_done_callback(running_tasks.discard)
 
         async def sse_generator():
             try:
+                # Yield control to allow connection setup to complete before exception propagation
+                await asyncio.sleep(0.01)
                 while True:
                     item = await channel.queue.get()
                     if item is None:
@@ -135,21 +164,20 @@ async def execute_session_turn(session_id: str, request: TurnRequest):
                         data_str = str(data)
                     yield f"event: {event}\ndata: {data_str}\n\n"
             except asyncio.CancelledError:
-                # Cancel background task if client disconnects
                 task.cancel()
                 raise
             finally:
-                try:
-                    await task
-                except Exception:
-                    # Exception should already be handled/reported by harness,
-                    # but we make sure we don't crash the generator's exit
-                    pass
+                # Give the client a moment to start reading the stream before raising
+                await asyncio.sleep(0.01)
+                # Await task to propagate errors safely
+                await task
 
         return StreamingResponse(sse_generator(), media_type="text/event-stream")
     else:
         # Run in background for webhook/discord/qq/etc.
-        asyncio.create_task(harness.execute_turn(session_ctx, channel, user_message))
+        task = asyncio.create_task(harness.execute_turn(session_ctx, channel, user_message))
+        running_tasks.add(task)
+        task.add_done_callback(running_tasks.discard)
         return {"status": "ok", "message": "Turn started in background"}
 
 def main():
