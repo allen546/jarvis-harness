@@ -10,6 +10,7 @@ class QQChannel(BaseChannel):
         self._stream_filters = {}
 
     async def send_message(self, session_id: str, message: Message):
+        self._stream_filters.pop(session_id, None)
         botpy = importlib.import_module("botpy")
         pass
 

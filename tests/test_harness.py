@@ -144,7 +144,8 @@ def test_stateful_filter_split_tokens():
     assert f3.filter_chunk("go home") == "Now let me go home"
 
 
-def test_qq_channel_stateful_filter():
+@pytest.mark.asyncio
+async def test_qq_channel_stateful_filter(monkeypatch):
     qq = QQChannel(app_id="app123", app_secret="sec123")
     
     # Test filtering content with re.sub (filter_content works on full string)
@@ -154,9 +155,16 @@ def test_qq_channel_stateful_filter():
     assert qq.filter_stream_chunk("session-1", "Now let ") == ""
     assert qq.filter_stream_chunk("session-1", "me read: Hello!") == "Hello!"
     
+    assert "session-1" in qq._stream_filters
+    
+    # Mock botpy module loading
+    monkeypatch.setattr("importlib.import_module", lambda name: MagicMock())
+    
+    await qq.send_message("session-1", Message(role="assistant", content="Hello!"))
+    assert "session-1" not in qq._stream_filters
+    
     # Different session should not interfere
     assert qq.filter_stream_chunk("session-2", "Executing ") == ""
-    assert qq.filter_stream_chunk("session-1", " and normal") == " and normal"
     assert qq.filter_stream_chunk("session-2", "command: working") == "working"
 
 
