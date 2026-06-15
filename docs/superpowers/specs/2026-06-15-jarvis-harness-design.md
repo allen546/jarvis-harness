@@ -77,13 +77,13 @@ Subagents are treated as standard tool calls. When triggered, the harness builds
 
 ### 3.1 Project Directory Layout
 
-All modules are flat sibling packages inside the main `openclaw_lite` directory:
+All modules are flat sibling packages inside the main `jarvis` directory:
 
 ```text
 jarvis/
 ├── config.yaml                     # Model parameters, ports, active MCPs
 ├── main.py                         # Gateway daemon (FastAPI & SSE)
-└── openclaw_lite/
+└── jarvis/
     ├── __init__.py
     ├── config.py                   # Config schemas (Pydantic)
     ├── harness.py                  # Core AgentHarness execution

@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Build a lightweight, microkernel-style agent harness (`openclaw`-style) with dynamic-import model SDKs, a pluggable direct-component interface, custom hooks, and isolated subagent tool spawner.
+**Goal:** Build a lightweight, microkernel-style agent harness (`openclaw`-style) written in Python, named `jarvis`. It supports pluggable models, memory, channels, skills, and MCP servers with minimal dependencies.
 
 **Architecture:** A thin main FastAPI gateway daemon manages sessions and coordinates model clients, memory, channels, skills parser, and MCP registries via a direct `execute_turn` runner step. Dynamic import of model SDKs inside provider classes avoids import overhead.
 
@@ -13,16 +13,16 @@
 ### Task 1: Core Config and Models Interface
 
 **Files:**
-- Create: `openclaw_lite/config.py`
-- Create: `openclaw_lite/models/base.py`
+- Create: `jarvis/config.py`
+- Create: `jarvis/models/base.py`
 - Create: `tests/test_config_models.py`
 
 - [ ] **Step 1: Write the failing test for configuration and base models**
   Create `tests/test_config_models.py`:
   ```python
   import pytest
-  from openclaw_lite.config import ModelConfig, HarnessConfig
-  from openclaw_lite.models.base import Attachment, NativeAction, Message, ToolCall, ModelResponse
+  from jarvis.config import ModelConfig, HarnessConfig
+  from jarvis.models.base import Attachment, NativeAction, Message, ToolCall, ModelResponse
 
   def test_configs_and_messages():
       m_config = ModelConfig(provider="gemini", model_name="gemini-1.5-pro")
@@ -44,10 +44,10 @@
 
 - [ ] **Step 2: Run test to verify it fails**
   Run: `pytest tests/test_config_models.py -v`
-  Expected: FAIL (ModuleNotFoundError: No module named 'openclaw_lite')
+  Expected: FAIL (ModuleNotFoundError: No module named 'jarvis')
 
 - [ ] **Step 3: Write config and base models implementation**
-  Create `openclaw_lite/config.py`:
+  Create `jarvis/config.py`:
   ```python
   from pydantic import BaseModel, Field
   from typing import Optional, Any
@@ -66,7 +66,7 @@
       allowed_skills: list[str] = Field(default_factory=list)
   ```
 
-  Create `openclaw_lite/models/base.py`:
+  Create `jarvis/models/base.py`:
   ```python
   from pydantic import BaseModel, Field
   from typing import Any, Optional
@@ -109,7 +109,7 @@
 - [ ] **Step 5: Commit**
   Run:
   ```bash
-  git add openclaw_lite/config.py openclaw_lite/models/base.py tests/test_config_models.py
+  git add jarvis/config.py jarvis/models/base.py tests/test_config_models.py
   git commit -m "feat: add config schema and base models"
   ```
 
@@ -118,9 +118,9 @@
 ### Task 2: Dynamic-Import Model Providers
 
 **Files:**
-- Create: `openclaw_lite/models/gemini.py`
-- Create: `openclaw_lite/models/anthropic.py`
-- Create: `openclaw_lite/models/openai.py`
+- Create: `jarvis/models/gemini.py`
+- Create: `jarvis/models/anthropic.py`
+- Create: `jarvis/models/openai.py`
 - Create: `tests/test_model_providers.py`
 
 - [ ] **Step 1: Write mock tests for dynamic model imports**
@@ -128,10 +128,10 @@
   ```python
   import pytest
   from unittest.mock import MagicMock, patch
-  from openclaw_lite.models.gemini import GeminiClient
-  from openclaw_lite.models.anthropic import AnthropicClient
-  from openclaw_lite.models.openai import OpenAIClient
-  from openclaw_lite.models.base import Message
+  from jarvis.models.gemini import GeminiClient
+  from jarvis.models.anthropic import AnthropicClient
+  from jarvis.models.openai import OpenAIClient
+  from jarvis.models.base import Message
 
   @pytest.mark.asyncio
   @patch("httpx.AsyncClient.post")
@@ -146,7 +146,6 @@
 
   @pytest.mark.asyncio
   async def test_anthropic_dynamic_import():
-      # Ensure AnthropicClient initializes and only imports anthropic on generate
       with patch("importlib.import_module") as mock_import:
           client = AnthropicClient(api_key="fake-key", model_name="claude-3-5-sonnet")
           assert not mock_import.called
@@ -154,14 +153,14 @@
 
 - [ ] **Step 2: Run test to verify it fails**
   Run: `pytest tests/test_model_providers.py -v`
-  Expected: FAIL (ModuleNotFoundError: No module named 'openclaw_lite.models.gemini')
+  Expected: FAIL (ModuleNotFoundError: No module named 'jarvis.models.gemini')
 
 - [ ] **Step 3: Implement dynamic-import model providers**
-  Create `openclaw_lite/models/gemini.py`:
+  Create `jarvis/models/gemini.py`:
   ```python
   import httpx
   from typing import Any
-  from openclaw_lite.models.base import BaseModelClient, Message, ModelResponse
+  from jarvis.models.base import BaseModelClient, Message, ModelResponse
 
   class GeminiClient(BaseModelClient):
       def __init__(self, api_key: str, model_name: str):
@@ -169,7 +168,6 @@
           self.model_name = model_name
 
       async def generate(self, messages: list[Message], tools: list[Any]) -> ModelResponse:
-          # Use direct HTTP request via httpx to avoid heavy SDK
           url = f"https://generativelimitless.googleapis.com/v1beta/models/{self.model_name}:generateContent?key={self.api_key}"
           contents = []
           for m in messages:
@@ -179,7 +177,6 @@
               })
           payload = {"contents": contents}
           if tools:
-              # Very basic tool conversion placeholder
               payload["tools"] = [{"functionDeclarations": tools}]
           
           async with httpx.AsyncClient() as client:
@@ -190,11 +187,11 @@
               return ModelResponse(content=text, tool_calls=[], raw_response=data)
   ```
 
-  Create `openclaw_lite/models/anthropic.py`:
+  Create `jarvis/models/anthropic.py`:
   ```python
   import importlib
   from typing import Any
-  from openclaw_lite.models.base import BaseModelClient, Message, ModelResponse, ToolCall
+  from jarvis.models.base import BaseModelClient, Message, ModelResponse, ToolCall
 
   class AnthropicClient(BaseModelClient):
       def __init__(self, api_key: str, model_name: str):
@@ -202,7 +199,6 @@
           self.model_name = model_name
 
       async def generate(self, messages: list[Message], tools: list[Any]) -> ModelResponse:
-          # Dynamically import anthropic sdk to prevent startup import bloat
           anthropic = importlib.import_module("anthropic")
           client = anthropic.AsyncAnthropic(api_key=self.api_key)
           
@@ -244,11 +240,11 @@
           return ModelResponse(content=content_text, tool_calls=tool_calls, raw_response=response)
   ```
 
-  Create `openclaw_lite/models/openai.py`:
+  Create `jarvis/models/openai.py`:
   ```python
   import importlib
   from typing import Any
-  from openclaw_lite.models.base import BaseModelClient, Message, ModelResponse, ToolCall
+  from jarvis.models.base import BaseModelClient, Message, ModelResponse, ToolCall
 
   class OpenAIClient(BaseModelClient):
       def __init__(self, api_key: str, model_name: str):
@@ -256,7 +252,6 @@
           self.model_name = model_name
 
       async def generate(self, messages: list[Message], tools: list[Any]) -> ModelResponse:
-          # Dynamically import openai sdk to prevent startup import bloat
           openai = importlib.import_module("openai")
           client = openai.AsyncOpenAI(api_key=self.api_key)
           
@@ -301,7 +296,7 @@
 - [ ] **Step 5: Commit**
   Run:
   ```bash
-  git add openclaw_lite/models/gemini.py openclaw_lite/models/anthropic.py openclaw_lite/models/openai.py tests/test_model_providers.py
+  git add jarvis/models/gemini.py jarvis/models/anthropic.py jarvis/models/openai.py tests/test_model_providers.py
   git commit -m "feat: implement dynamic model providers for gemini, claude, and openai"
   ```
 
@@ -310,10 +305,10 @@
 ### Task 3: Channels & Local Memory
 
 **Files:**
-- Create: `openclaw_lite/channels/base.py`
-- Create: `openclaw_lite/channels/webhook.py`
-- Create: `openclaw_lite/memory/base.py`
-- Create: `openclaw_lite/memory/jsonl.py`
+- Create: `jarvis/channels/base.py`
+- Create: `jarvis/channels/webhook.py`
+- Create: `jarvis/memory/base.py`
+- Create: `jarvis/memory/jsonl.py`
 - Create: `tests/test_memory_channel.py`
 
 - [ ] **Step 1: Write test for local memory and webhook channels**
@@ -322,9 +317,9 @@
   import pytest
   import os
   import json
-  from openclaw_lite.memory.jsonl import JSONLMemoryEngine
-  from openclaw_lite.models.base import Message
-  from openclaw_lite.harness import SessionContext
+  from jarvis.memory.jsonl import JSONLMemoryEngine
+  from jarvis.models.base import Message
+  from jarvis.harness import SessionContext
 
   @pytest.mark.asyncio
   async def test_jsonl_memory(tmp_path):
@@ -344,12 +339,12 @@
 
 - [ ] **Step 2: Run test to verify it fails**
   Run: `pytest tests/test_memory_channel.py -v`
-  Expected: FAIL (ModuleNotFoundError: No module named 'openclaw_lite.memory.jsonl')
+  Expected: FAIL (ModuleNotFoundError: No module named 'jarvis.memory.jsonl')
 
 - [ ] **Step 3: Implement local memory and channels**
-  Create `openclaw_lite/channels/base.py`:
+  Create `jarvis/channels/base.py`:
   ```python
-  from openclaw_lite.models.base import Message
+  from jarvis.models.base import Message
   from typing import Any
 
   class BaseChannel:
@@ -360,10 +355,10 @@
           return []
   ```
 
-  Create `openclaw_lite/channels/webhook.py`:
+  Create `jarvis/channels/webhook.py`:
   ```python
-  from openclaw_lite.channels.base import BaseChannel
-  from openclaw_lite.models.base import Message
+  from jarvis.channels.base import BaseChannel
+  from jarvis.models.base import Message
   import httpx
 
   class WebhookChannel(BaseChannel):
@@ -378,9 +373,9 @@
               })
   ```
 
-  Create `openclaw_lite/memory/base.py`:
+  Create `jarvis/memory/base.py`:
   ```python
-  from openclaw_lite.models.base import Message
+  from jarvis.models.base import Message
   from pydantic import BaseModel, Field
   from typing import Optional, Any
 
@@ -396,13 +391,13 @@
           raise NotImplementedError
   ```
 
-  Create `openclaw_lite/memory/jsonl.py`:
+  Create `jarvis/memory/jsonl.py`:
   ```python
   import json
   import os
   import aiofiles
-  from openclaw_lite.memory.base import BaseMemoryEngine, SessionContext
-  from openclaw_lite.models.base import Message
+  from jarvis.memory.base import BaseMemoryEngine, SessionContext
+  from jarvis.models.base import Message
 
   class JSONLMemoryEngine(BaseMemoryEngine):
       def __init__(self, file_path: str = "history.jsonl"):
@@ -438,7 +433,7 @@
 - [ ] **Step 5: Commit**
   Run:
   ```bash
-  git add openclaw_lite/channels/base.py openclaw_lite/channels/webhook.py openclaw_lite/memory/base.py openclaw_lite/memory/jsonl.py tests/test_memory_channel.py
+  git add jarvis/channels/base.py jarvis/channels/webhook.py jarvis/memory/base.py jarvis/memory/jsonl.py tests/test_memory_channel.py
   git commit -m "feat: add channel and local memory JSONL engine"
   ```
 
@@ -447,15 +442,15 @@
 ### Task 4: Skills & MCP Registries
 
 **Files:**
-- Create: `openclaw_lite/skills/parser.py`
-- Create: `openclaw_lite/mcp/client.py`
+- Create: `jarvis/skills/parser.py`
+- Create: `jarvis/mcp/client.py`
 - Create: `tests/test_skills_mcp.py`
 
 - [ ] **Step 1: Write test for SKILL.md parsing and triggers**
   Create `tests/test_skills_mcp.py`:
   ```python
   import pytest
-  from openclaw_lite.skills.parser import parse_skill_file
+  from jarvis.skills.parser import parse_skill_file
 
   def test_skill_parsing(tmp_path):
       skill_dir = tmp_path / "my_skill"
@@ -477,10 +472,10 @@
 
 - [ ] **Step 2: Run test to verify it fails**
   Run: `pytest tests/test_skills_mcp.py -v`
-  Expected: FAIL (ModuleNotFoundError: No module named 'openclaw_lite.skills.parser')
+  Expected: FAIL (ModuleNotFoundError: No module named 'jarvis.skills.parser')
 
 - [ ] **Step 3: Implement SKILL.md parser and MCP client**
-  Create `openclaw_lite/skills/parser.py`:
+  Create `jarvis/skills/parser.py`:
   ```python
   import yaml
   import re
@@ -498,7 +493,6 @@
       with open(file_path, "r", encoding="utf-8") as f:
           content = f.read()
       
-      # Match yaml frontmatter
       match = re.match(r"^---\s*\n(.*?)\n---\s*\n(.*)$", content, re.DOTALL)
       if not match:
           raise ValueError(f"No valid frontmatter found in skill {file_path}")
@@ -506,7 +500,6 @@
       frontmatter_str, markdown_body = match.groups()
       meta = yaml.safe_load(frontmatter_str)
       
-      # Inject skill name/details in instructions for LLM context compatibility
       instructions = f"Skill: {meta.get('name')}\nDescription: {meta.get('description')}\n{markdown_body}"
       
       return Skill(
@@ -518,7 +511,7 @@
       )
   ```
 
-  Create `openclaw_lite/mcp/client.py`:
+  Create `jarvis/mcp/client.py`:
   ```python
   from mcp import ClientSession, StdioServerParameters
   from mcp.client.stdio import stdio_client
@@ -554,7 +547,6 @@
           if not self.session:
               raise RuntimeError("Not connected to MCP server")
           result = await self.session.call_tool(name, arguments)
-          # Format output as string
           return "\n".join([c.text for c in result.content if hasattr(c, 'text')])
   ```
 
@@ -565,7 +557,7 @@
 - [ ] **Step 5: Commit**
   Run:
   ```bash
-  git add openclaw_lite/skills/parser.py openclaw_lite/mcp/client.py tests/test_skills_mcp.py
+  git add jarvis/skills/parser.py jarvis/mcp/client.py tests/test_skills_mcp.py
   git commit -m "feat: implement skill markdown parser and mcp client session manager"
   ```
 
@@ -574,7 +566,7 @@
 ### Task 5: The Agent Harness Execution Step
 
 **Files:**
-- Create: `openclaw_lite/harness.py`
+- Create: `jarvis/harness.py`
 - Create: `tests/test_harness.py`
 
 - [ ] **Step 1: Write mock tests for execute_turn and hooks**
@@ -582,8 +574,8 @@
   ```python
   import pytest
   from unittest.mock import AsyncMock, MagicMock
-  from openclaw_lite.harness import AgentHarness, TurnResult, HarnessConfig, SessionContext
-  from openclaw_lite.models.base import Message, ModelResponse
+  from jarvis.harness import AgentHarness, TurnResult, HarnessConfig, SessionContext
+  from jarvis.models.base import Message, ModelResponse
 
   @pytest.mark.asyncio
   async def test_execute_turn_without_tools():
@@ -597,7 +589,6 @@
 
       harness = AgentHarness(config, model_client, memory, MagicMock(), MagicMock())
       
-      # Hook mock
       pre_hook_called = False
       async def dummy_pre_hook(ctx, history):
           nonlocal pre_hook_called
@@ -619,16 +610,16 @@
 
 - [ ] **Step 2: Run test to verify it fails**
   Run: `pytest tests/test_harness.py -v`
-  Expected: FAIL (ModuleNotFoundError: No module named 'openclaw_lite.harness')
+  Expected: FAIL (ModuleNotFoundError: No module named 'jarvis.harness')
 
 - [ ] **Step 3: Implement execution harness step**
-  Create `openclaw_lite/harness.py`:
+  Create `jarvis/harness.py`:
   ```python
   from typing import Optional, Any, Callable, list
-  from openclaw_lite.config import HarnessConfig
-  from openclaw_lite.memory.base import SessionContext, BaseMemoryEngine
-  from openclaw_lite.models.base import BaseModelClient, Message, ToolCall, ModelResponse
-  from openclaw_lite.channels.base import BaseChannel
+  from jarvis.config import HarnessConfig
+  from jarvis.memory.base import SessionContext, BaseMemoryEngine
+  from jarvis.models.base import BaseModelClient, Message, ToolCall, ModelResponse
+  from jarvis.channels.base import BaseChannel
   from pydantic import BaseModel, Field
 
   class TurnResult(BaseModel):
@@ -660,44 +651,34 @@
           channel: BaseChannel,
           user_message: Optional[Message] = None
       ) -> TurnResult:
-          # 1. Load history
           history = await self.memory_engine.load_history(session_ctx)
           
-          # Append system prompt if history is empty
           if not history and self.config.system_prompt:
               history.insert(0, Message(role="system", content=self.config.system_prompt))
           
-          # 2. Append new user message if provided
           if user_message:
               history.append(user_message)
               await self.memory_engine.save_history(session_ctx, [user_message])
 
-          # Apply pre-turn hooks
           for hook in self.pre_turn_hooks:
               history = await hook(session_ctx, history)
 
-          # 3. Gather tools (aggregate MCP and skill instructions)
-          tools = [] # Schema configurations
+          tools = []
           
-          # 4. Call Model Client
           response = await self.model_client.generate(history, tools=tools)
 
-          # Apply post-message hooks
           for hook in self.post_message_hooks:
               await hook(session_ctx, response)
 
-          # 5. Save assistant reply
           assistant_msg = Message(role="assistant", content=response.content or "")
           await self.memory_engine.save_history(session_ctx, [assistant_msg])
 
-          # 6. Execute requested tool calls (if any)
           tool_results = []
           if response.tool_calls:
               for tc in response.tool_calls:
-                  output = "Tool executed." # Placeholder tool execution
+                  output = "Tool executed."
                   tool_results.append((tc, output))
               
-              # Append tool responses to history
               tool_msgs = []
               for tc, output in tool_results:
                   tool_msgs.append(Message(
@@ -720,7 +701,7 @@
 - [ ] **Step 5: Commit**
   Run:
   ```bash
-  git add openclaw_lite/harness.py tests/test_harness.py
+  git add jarvis/harness.py tests/test_harness.py
   git commit -m "feat: implement single turn execution harness and hooks"
   ```
 
@@ -729,7 +710,7 @@
 ### Task 6: Subagent Spawner and Tool Delegation
 
 **Files:**
-- Create: `openclaw_lite/subagent.py`
+- Create: `jarvis/subagent.py`
 - Create: `tests/test_subagent.py`
 
 - [ ] **Step 1: Write test for isolated subagent execution**
@@ -737,14 +718,13 @@
   ```python
   import pytest
   from unittest.mock import AsyncMock, MagicMock
-  from openclaw_lite.subagent import SubagentSpawner
-  from openclaw_lite.memory.base import SessionContext
-  from openclaw_lite.config import HarnessConfig
-  from openclaw_lite.models.base import Message
+  from jarvis.subagent import SubagentSpawner
+  from jarvis.memory.base import SessionContext
+  from jarvis.config import HarnessConfig
+  from jarvis.models.base import Message
 
   @pytest.mark.asyncio
   async def test_subagent_spawner():
-      # Spawner builds new harness instances dynamically and loops execute_turn
       spawner = SubagentSpawner(factory_config={
           "model": lambda: MagicMock(),
           "memory": lambda: MagicMock()
@@ -753,7 +733,6 @@
       parent_ctx = SessionContext(session_id="parent-session")
       channel = MagicMock()
       
-      # Mock the builder methods on the spawner
       spawner._create_harness = MagicMock()
       mock_harness = MagicMock()
       mock_harness.execute_turn = AsyncMock(return_value=MagicMock(
@@ -775,18 +754,18 @@
 
 - [ ] **Step 2: Run test to verify it fails**
   Run: `pytest tests/test_subagent.py -v`
-  Expected: FAIL (ModuleNotFoundError: No module named 'openclaw_lite.subagent')
+  Expected: FAIL (ModuleNotFoundError: No module named 'jarvis.subagent')
 
 - [ ] **Step 3: Implement subagent spawner**
-  Create `openclaw_lite/subagent.py`:
+  Create `jarvis/subagent.py`:
   ```python
   import uuid
   from typing import Any
-  from openclaw_lite.memory.base import SessionContext
-  from openclaw_lite.config import HarnessConfig
-  from openclaw_lite.models.base import Message
-  from openclaw_lite.channels.base import BaseChannel
-  from openclaw_lite.harness import AgentHarness
+  from jarvis.memory.base import SessionContext
+  from jarvis.config import HarnessConfig
+  from jarvis.models.base import Message
+  from jarvis.channels.base import BaseChannel
+  from jarvis.harness import AgentHarness
 
   class SubagentSpawner:
       def __init__(self, factory_config: dict[str, Any]):
@@ -795,7 +774,6 @@
       def _create_harness(self, config: HarnessConfig) -> AgentHarness:
           model_client = self.factory_config["model"]()
           memory_engine = self.factory_config["memory"]()
-          # Reuse or setup empty registers
           return AgentHarness(
               config=config,
               model_client=model_client,
@@ -811,17 +789,14 @@
           task: str,
           subagent_config: HarnessConfig
       ) -> Message:
-          # Create isolated context
           child_ctx = SessionContext(
               session_id=f"{parent_ctx.session_id}-sub-{uuid.uuid4().hex[:6]}",
               parent_session_id=parent_ctx.session_id,
               scope={"task": task}
           )
 
-          # Build isolated harness
           harness = self._create_harness(subagent_config)
 
-          # Send primary task
           initial_instruction = Message(
               role="system",
               content=f"Isolated subagent task: {task}. Return final answer."
@@ -849,7 +824,7 @@
 - [ ] **Step 5: Commit**
   Run:
   ```bash
-  git add openclaw_lite/subagent.py tests/test_subagent.py
+  git add jarvis/subagent.py tests/test_subagent.py
   git commit -m "feat: implement subagent spawner tool execution"
   ```
 
@@ -872,7 +847,6 @@
   client = TestClient(app)
 
   def test_webhook_endpoint():
-      # Simple post verification
       response = client.post("/webhook", json={
           "session_id": "test-session",
           "message": {"role": "user", "content": "hello"}
@@ -900,7 +874,6 @@
       message: dict[str, Any]
 
   async def process_async_turn(session_id: str, message: dict[str, Any]):
-      # Place to instantiate harness and call execute_turn
       pass
 
   @app.post("/webhook")
