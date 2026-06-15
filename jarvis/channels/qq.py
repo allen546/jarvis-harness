@@ -1,12 +1,13 @@
 import importlib
 import re
-from jarvis.channels.base import BaseChannel
+from jarvis.channels.base import BaseChannel, StatefulFilter
 from jarvis.models.base import Message
 
 class QQChannel(BaseChannel):
     def __init__(self, app_id: str, app_secret: str):
         self.app_id = app_id
         self.app_secret = app_secret
+        self._stream_filters = {}
 
     async def send_message(self, session_id: str, message: Message):
         botpy = importlib.import_module("botpy")
@@ -19,3 +20,8 @@ class QQChannel(BaseChannel):
         # Filter internal monologue thought logs (e.g. "Now let me read file:")
         pattern = r"(?:Now let me read|Reading file|Executing command|Calling tool).*?:\s*"
         return re.sub(pattern, "", content)
+
+    def filter_stream_chunk(self, session_id: str, chunk: str) -> str:
+        if session_id not in self._stream_filters:
+            self._stream_filters[session_id] = StatefulFilter()
+        return self._stream_filters[session_id].filter_chunk(chunk)

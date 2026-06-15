@@ -44,22 +44,34 @@ class AgentHarness:
             await self.memory_engine.save_history(session_ctx, [user_message])
 
         for hook in self.pre_turn_hooks:
-            history = await hook(session_ctx, history)
+            hook_result = await hook(session_ctx, history)
+            if hook_result is not None:
+                history = hook_result
 
         tools = []
 
         # Streaming generation
         accumulated_text = ""
         final_tool_calls = []
-        async for response_chunk in self.model_client.generate_stream(history, tools=tools):
-            if response_chunk.content:
-                accumulated_text += response_chunk.content
-                # Filter channel content before streaming
-                filtered_chunk = channel.filter_content(response_chunk.content)
-                if filtered_chunk:
-                    await channel.send_stream_chunk(session_ctx.session_id, filtered_chunk)
-            if response_chunk.tool_calls:
-                final_tool_calls.extend(response_chunk.tool_calls)
+        try:
+            async for response_chunk in self.model_client.generate_stream(history, tools=tools):
+                if response_chunk.content:
+                    accumulated_text += response_chunk.content
+                    # Filter channel content before streaming
+                    filtered_chunk = channel.filter_stream_chunk(session_ctx.session_id, response_chunk.content)
+                    if filtered_chunk:
+                        await channel.send_stream_chunk(session_ctx.session_id, filtered_chunk)
+                if response_chunk.tool_calls:
+                    final_tool_calls.extend(response_chunk.tool_calls)
+        except Exception as e:
+            # Save whatever partial accumulated_text was generated
+            assistant_msg = Message(role="assistant", content=accumulated_text)
+            await self.memory_engine.save_history(session_ctx, [assistant_msg])
+            # Notify channel
+            error_msg = Message(role="assistant", content=f"Error: {str(e)}")
+            await channel.send_message(session_ctx.session_id, error_msg)
+            # Re-raise
+            raise e
 
         final_response = ModelResponse(content=accumulated_text, tool_calls=final_tool_calls, raw_response=None)
 
