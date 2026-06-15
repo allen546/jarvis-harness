@@ -18,16 +18,31 @@ def test_channels_initialization():
 async def test_cli_channel(capsys):
     from jarvis.channels.cli import CLIChannel
     
+    # Reset state to ensure clean test environment
+    CLIChannel._last_active_session = None
+    
     channel = CLIChannel()
     await channel.send_stream_chunk("session1", "Hello ")
     await channel.send_stream_chunk("session1", "World")
     
     captured = capsys.readouterr()
-    assert captured.out == "Hello World"
+    assert captured.out == "[session1] Hello World"
     
     msg = Message(role="assistant", content="ignored")
     await channel.send_message("session1", msg)
     
     captured = capsys.readouterr()
     assert captured.out == "\n"
+
+    # Test switching session
+    await channel.send_stream_chunk("session2", "New session text")
+    captured = capsys.readouterr()
+    assert captured.out == "\n[session2] New session text"
+
+    # Test error output
+    error_msg = Message(role="assistant", content="Error: System overload")
+    await channel.send_message("session2", error_msg)
+    captured = capsys.readouterr()
+    assert captured.out == "\nError: System overload"
+
 
