@@ -75,22 +75,24 @@ Subagents are treated as standard tool calls. When triggered, the harness builds
 
 ---
 
-## 3. Project Structure & Dependencies
+### 3.1 Project Directory Layout
+
+All modules are flat sibling packages inside the main `openclaw_lite` directory:
 
 ```text
 jarvis/
-├── config.yaml               # Model parameters, ports, active MCPs
-├── main.py                   # Gateway daemon (FastAPI & SSE)
-├── openclaw_lite/
-│   ├── config.py             # Config schemas (Pydantic)
-│   ├── harness.py            # Core AgentHarness execution
-│   ├── subagent.py           # Subagent factory & tool wrapper
-│   ├── models/               # Dynamic-import model providers
-│   ├── memory/               # Context & history managers
-│   ├── channels/             # Discord/Slack/CLI channels
-│   ├── skills/               # SKILL.md parser
-│   └── mcp/                  # MCP client integrations
-└── tests/
+├── config.yaml                     # Model parameters, ports, active MCPs
+├── main.py                         # Gateway daemon (FastAPI & SSE)
+└── openclaw_lite/
+    ├── __init__.py
+    ├── config.py                   # Config schemas (Pydantic)
+    ├── harness.py                  # Core AgentHarness execution
+    ├── subagent.py                 # Subagent factory & tool wrapper
+    ├── models/                     # [Folder] Dynamic-import model providers
+    ├── memory/                     # [Folder] Context & history managers
+    ├── channels/                   # [Folder] Discord/Slack/CLI channels
+    ├── skills/                     # [Folder] SKILL.md parser
+    └── mcp/                        # [Folder] MCP client integrations
 ```
 
 ### Dependency Stack
