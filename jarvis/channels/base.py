@@ -1,5 +1,6 @@
 from jarvis.models.base import Message
 from typing import Any
+import asyncio
 
 class StatefulFilter:
     TARGET_PREFIXES = ["Now let me read", "Reading file", "Executing command", "Calling tool"]
@@ -89,3 +90,15 @@ class BaseChannel:
 
     def get_channel_tools(self, session_id: str) -> list[Any]:
         return []
+
+class QueueChannel(BaseChannel):
+    def __init__(self):
+        self.queue = asyncio.Queue()
+
+    async def send_stream_chunk(self, session_id: str, chunk: str):
+        await self.queue.put({"event": "chunk", "data": chunk})
+
+    async def send_message(self, session_id: str, message: Message):
+        await self.queue.put({"event": "message", "data": message.model_dump()})
+        await self.queue.put(None)
+
