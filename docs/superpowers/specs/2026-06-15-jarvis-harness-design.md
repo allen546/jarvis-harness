@@ -9,7 +9,7 @@ A lightweight, openclaw-style agent harness featuring a gateway-first daemon arc
 The core of Jarvis uses a direct-component interface (Service Locator) to keep execution paths simple and debuggable. 
 
 ### 1.1 Rich Message, Streaming & Channels
-Channels represent communication integrations (Discord, QQ, CLI, etc.). They handle streaming chunks and native behaviors without polluting the core loop.
+Channels represent communication integrations (Discord, QQ, CLI, etc.). They handle streaming chunks, content filtering (e.g., stripping thought logs or formatting for specific platforms), and native behaviors without polluting the core loop.
 
 ```python
 class BaseChannel:
@@ -21,13 +21,17 @@ class BaseChannel:
         """Streams a text chunk back to the channel in real-time."""
         pass
 
+    def filter_content(self, content: str) -> str:
+        """Filters or cleans model output content (e.g. stripping thoughts/internal monologue)."""
+        return content
+
     def get_channel_tools(self, session_id: str) -> list[Any]:
         """Dynamically registers channel-native tools (e.g. Discord emoji reactions)."""
         return []
 ```
 
 ### 1.2 Model Client & Streaming Support
-The `BaseModelClient` supports both one-shot generation and real-time token streaming. Model SDKs (like `anthropic`, `openai`, or `google-genai`) are imported **dynamically** inside their respective modules to avoid startup bloat.
+The `BaseModelClient` supports both one-shot generation and real-time token streaming. Model SDKs (like `anthropic`, `openai`) are imported **dynamically** inside their respective modules to avoid startup bloat. Gemini is kept as a stub client.
 
 ```python
 class BaseModelClient:
@@ -61,7 +65,7 @@ class BaseMemoryEngine:
 ## 2. Core Execution Loop & Subagents
 
 ### 2.1 Streamed turn execution (`execute_turn`)
-The core runner executes a single turn. It invokes the model's stream, forwards text chunks to the channel, aggregates the final response, and executes any generated tool calls before writing to history.
+The core runner executes a single turn. It invokes the model's stream, filters output through the channel-specific `filter_content`, forwards text chunks to the channel, aggregates the final response, and executes any generated tool calls before writing to history.
 
 ---
 
@@ -80,9 +84,9 @@ jarvis/
     ├── config.py                   # Config schemas (Pydantic)
     ├── harness.py                  # Core AgentHarness execution
     ├── subagent.py                 # Subagent factory & tool wrapper
-    ├── models/                     # [Folder] Native SDKs & OpenAI-compatible providers
+    ├── models/                     # [Folder] Native SDKs & OpenAI-compatible providers (Gemini is stubbed)
     ├── memory/                     # [Folder] Session history manager
-    ├── channels/                   # [Folder] Discord, QQ, and generic Webhook channels
+    ├── channels/                   # [Folder] Discord, QQ, and generic Webhook channels (supporting filters)
     ├── skills/                     # [Folder] SKILL.md parser
     └── mcp/                        # [Folder] MCP client integrations
 ```

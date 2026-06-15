@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Build a lightweight, microkernel-style agent harness (`openclaw`-style) written in Python, named `jarvis`. It supports pluggable models, memory, channels, skills, and MCP servers with minimal dependencies, QQ & Discord integrations, OpenAI-compatible clients, dynamic session JSON configs, and streaming.
+**Goal:** Build a lightweight, microkernel-style agent harness (`openclaw`-style) written in Python, named `jarvis`. It supports pluggable models, memory, channels, skills, and MCP servers with minimal dependencies, QQ & Discord integrations, OpenAI-compatible clients, dynamic session JSON configs, streaming, channel-side filters, and a stubbed Gemini client.
 
 **Architecture:** A thin main FastAPI gateway daemon manages sessions and coordinates model clients, memory, channels, skills parser, and MCP registries via a direct `execute_turn` runner step. Dynamic import of model SDKs inside provider classes avoids import overhead.
 
@@ -27,7 +27,6 @@
   from jarvis.models.base import Attachment, NativeAction, Message, ToolCall, ModelResponse
 
   def test_configs_and_messages(tmp_path):
-      # Test config json loader
       config_dir = tmp_path / "config" / "sessions"
       config_dir.mkdir(parents=True)
       session_file = config_dir / "session_123.json"
@@ -44,7 +43,6 @@
       assert cfg.model.provider == "openai_compatible"
       assert cfg.model.extra_params["base_url"] == "http://localhost:11434/v1"
 
-      # Base classes
       attachment = Attachment(file_path="/tmp/test.jpg", mime_type="image/jpeg")
       action = NativeAction(action_type="react", params={"emoji": "👍"})
       msg = Message(role="user", content="Hello", attachments=[attachment], native_actions=[action])
@@ -92,14 +90,12 @@
       if os.path.exists(session_file):
           with open(session_file, "r") as f:
               session_data = json.load(f)
-              # Deep merge basic structure
               for k, v in session_data.items():
                   if k in data and isinstance(data[k], dict) and isinstance(v, dict):
                       data[k].update(v)
                   else:
                       data[k] = v
       
-      # Default fallback if empty
       if not data:
           data = {
               "model": {"provider": "openai", "model_name": "gpt-4o"},
@@ -161,7 +157,7 @@
 
 ---
 
-### Task 2: Model Providers & OpenAI-Compatible (Native SDKs)
+### Task 2: Model Providers & OpenAI-Compatible (Native SDKs + Gemini Stub)
 
 **Files:**
 - Create: `jarvis/models/gemini.py`
@@ -170,28 +166,20 @@
 - Create: `jarvis/models/openai_compatible.py`
 - Create: `tests/test_model_providers.py`
 
-- [ ] **Step 1: Write mock tests for model providers and streaming**
+- [ ] **Step 1: Write tests verifying Gemini client is stubbed and others compile**
   Create `tests/test_model_providers.py`:
   ```python
   import pytest
-  from unittest.mock import MagicMock, patch
   from jarvis.models.gemini import GeminiClient
   from jarvis.models.openai_compatible import OpenAICompatibleClient
-  from jarvis.models.base import Message
 
   @pytest.mark.asyncio
-  @patch("httpx.AsyncClient.post")
-  async def test_gemini_client(mock_post):
-      mock_post.return_value = MagicMock(
-          status_code=200,
-          json=lambda: {"candidates": [{"content": {"parts": [{"text": "Hello Gemini"}]}}]}
-      )
+  async def test_gemini_stub():
       client = GeminiClient(api_key="fake-key", model_name="gemini-1.5-flash")
-      resp = await client.generate([Message(role="user", content="Hi")], [])
-      assert resp.content == "Hello Gemini"
+      with pytest.raises(NotImplementedError):
+          await client.generate([], [])
 
-  @pytest.mark.asyncio
-  async def test_openai_compatible_client_init():
+  def test_openai_compatible_client_init():
       client = OpenAICompatibleClient(api_key="fake-key", model_name="local-llama", base_url="http://localhost:8000/v1")
       assert client.base_url == "http://localhost:8000/v1"
   ```
@@ -200,11 +188,10 @@
   Run: `pytest tests/test_model_providers.py -v`
   Expected: FAIL (ModuleNotFoundError: No module named 'jarvis.models.gemini')
 
-- [ ] **Step 3: Implement model providers with dynamic imports and streaming**
+- [ ] **Step 3: Implement model providers (Gemini stubbed, others stream-enabled)**
   Create `jarvis/models/gemini.py`:
   ```python
-  import httpx
-  from typing import Any, AsyncGenerator
+  from typing import AsyncGenerator, Any
   from jarvis.models.base import BaseModelClient, Message, ModelResponse
 
   class GeminiClient(BaseModelClient):
@@ -213,34 +200,17 @@
           self.model_name = model_name
 
       async def generate(self, messages: list[Message], tools: list[Any]) -> ModelResponse:
-          url = f"https://generativelimitless.googleapis.com/v1beta/models/{self.model_name}:generateContent?key={self.api_key}"
-          contents = [{"role": "model" if m.role == "assistant" else "user", "parts": [{"text": m.content}]} for m in messages]
-          payload = {"contents": contents}
-          if tools:
-              payload["tools"] = [{"functionDeclarations": tools}]
-          
-          async with httpx.AsyncClient() as client:
-              r = await client.post(url, json=payload, timeout=30.0)
-              r.raise_for_status()
-              data = r.json()
-              text = data["candidates"][0]["content"]["parts"][0]["text"]
-              return ModelResponse(content=text, tool_calls=[], raw_response=data)
+          raise NotImplementedError("GeminiClient is currently stubbed and not implemented.")
 
       async def generate_stream(self, messages: list[Message], tools: list[Any]) -> AsyncGenerator[ModelResponse, None]:
-          # Simple stub for direct HTTP Gemini stream parsing
-          url = f"https://generativelimitless.googleapis.com/v1beta/models/{self.model_name}:streamGenerateContent?key={self.api_key}"
-          contents = [{"role": "model" if m.role == "assistant" else "user", "parts": [{"text": m.content}]} for m in messages]
-          payload = {"contents": contents}
-          async with httpx.AsyncClient() as client:
-              async with client.stream("POST", url, json=payload, timeout=30.0) as r:
-                  # Parse basic chunks
-                  yield ModelResponse(content="Streaming complete", tool_calls=[], raw_response={})
+          raise NotImplementedError("GeminiClient is currently stubbed and not implemented.")
+          yield
   ```
 
   Create `jarvis/models/anthropic.py`:
   ```python
   import importlib
-  from typing import Any, AsyncGenerator
+  from typing import Any, AsyncGenerator, Optional
   from jarvis.models.base import BaseModelClient, Message, ModelResponse, ToolCall
 
   class AnthropicClient(BaseModelClient):
@@ -294,7 +264,7 @@
   Create `jarvis/models/openai.py`:
   ```python
   import importlib
-  from typing import Any, AsyncGenerator
+  from typing import Any, AsyncGenerator, Optional
   from jarvis.models.base import BaseModelClient, Message, ModelResponse, ToolCall
 
   class OpenAIClient(BaseModelClient):
@@ -336,6 +306,7 @@
 
   Create `jarvis/models/openai_compatible.py`:
   ```python
+  from typing import Optional
   from jarvis.models.openai import OpenAIClient
 
   class OpenAICompatibleClient(OpenAIClient):
@@ -356,7 +327,7 @@
 
 ---
 
-### Task 3: Discord, QQ, and Webhook Channels
+### Task 3: Channels (with content filtering) & Local Memory
 
 **Files:**
 - Create: `jarvis/channels/base.py`
@@ -365,7 +336,7 @@
 - Create: `jarvis/channels/qq.py`
 - Create: `tests/test_channels.py`
 
-- [ ] **Step 1: Write test for new channels and stream chunks**
+- [ ] **Step 1: Write test for new channels and stream chunks with filters**
   Create `tests/test_channels.py`:
   ```python
   import pytest
@@ -378,13 +349,18 @@
       qq = QQChannel(app_id="app123", app_secret="sec123")
       assert discord.bot_token == "token123"
       assert qq.app_id == "app123"
+
+      # Test content filtering on QQ channel
+      assert qq.filter_content("Now let me read main.py: Hello!") == "Hello!"
+      # Test content filtering on Discord (should preserve the thoughts)
+      assert discord.filter_content("Now let me read main.py: Hello!") == "Now let me read main.py: Hello!"
   ```
 
 - [ ] **Step 2: Run test to verify it fails**
   Run: `pytest tests/test_channels.py -v`
   Expected: FAIL (ModuleNotFoundError: No module named 'jarvis.channels.discord')
 
-- [ ] **Step 3: Implement Discord and QQ channel interfaces**
+- [ ] **Step 3: Implement Discord, QQ, and Webhook channels with filtering**
   Create `jarvis/channels/base.py`:
   ```python
   from jarvis.models.base import Message
@@ -396,6 +372,9 @@
 
       async def send_stream_chunk(self, session_id: str, chunk: str):
           pass
+
+      def filter_content(self, content: str) -> str:
+          return content
 
       def get_channel_tools(self, session_id: str) -> list[Any]:
           return []
@@ -419,7 +398,6 @@
               })
 
       async def send_stream_chunk(self, session_id: str, chunk: str):
-          # We can post raw chunks as text
           async with httpx.AsyncClient() as client:
               await client.post(self.callback_url + "/stream", text=chunk)
   ```
@@ -427,6 +405,7 @@
   Create `jarvis/channels/discord.py`:
   ```python
   import importlib
+  from typing import Optional, Any
   from jarvis.channels.base import BaseChannel
   from jarvis.models.base import Message
 
@@ -436,19 +415,17 @@
           self.guild_id = guild_id
 
       async def send_message(self, session_id: str, message: Message):
-          # Dynamically imports discord SDK
           discord = importlib.import_module("discord")
-          # Simple stub: sends REST client messages using channel ID mapped from session_id
           pass
 
       async def send_stream_chunk(self, session_id: str, chunk: str):
-          # Implement real-time channel updating or typing indicators
           pass
   ```
 
   Create `jarvis/channels/qq.py`:
   ```python
   import importlib
+  import re
   from jarvis.channels.base import BaseChannel
   from jarvis.models.base import Message
 
@@ -458,12 +435,16 @@
           self.app_secret = app_secret
 
       async def send_message(self, session_id: str, message: Message):
-          # Dynamically imports botpy or qq SDK
           botpy = importlib.import_module("botpy")
           pass
 
       async def send_stream_chunk(self, session_id: str, chunk: str):
           pass
+
+      def filter_content(self, content: str) -> str:
+          # Filter internal monologue thought logs (e.g. "Now let me read file:")
+          pattern = r"(?:Now let me read|Reading file|Executing command|Calling tool).*?:\s*"
+          return re.sub(pattern, "", content)
   ```
 
 - [ ] **Step 4: Run test to verify it passes**
@@ -474,7 +455,7 @@
   Run:
   ```bash
   git add jarvis/channels/base.py jarvis/channels/webhook.py jarvis/channels/discord.py jarvis/channels/qq.py tests/test_channels.py
-  git commit -m "feat: add discord and qq channels with dynamic sdk imports"
+  git commit -m "feat: add discord and qq channels with channel-side content filtering"
   ```
 
 ---
@@ -573,13 +554,13 @@
 
 ---
 
-### Task 5: Core Harness Loop (Streaming Integration)
+### Task 5: Core Harness Loop (with streaming and content filtering)
 
 **Files:**
 - Create: `jarvis/harness.py`
 - Create: `tests/test_harness.py`
 
-- [ ] **Step 1: Write mock test for streamed execute_turn**
+- [ ] **Step 1: Write mock test for filtered streamed execute_turn**
   Create `tests/test_harness.py`:
   ```python
   import pytest
@@ -588,14 +569,13 @@
   from jarvis.models.base import Message, ModelResponse
 
   @pytest.mark.asyncio
-  async def test_execute_turn_streamed():
+  async def test_execute_turn_streamed_filtered():
       config = HarnessConfig(system_prompt="system instructions")
       
-      # Mock model stream generator
       model_client = MagicMock()
       async def mock_stream(msgs, tools):
-          yield ModelResponse(content="chunk1", tool_calls=[], raw_response=None)
-          yield ModelResponse(content="chunk2", tool_calls=[], raw_response=None)
+          yield ModelResponse(content="Reading file: chunk1", tool_calls=[], raw_response=None)
+          yield ModelResponse(content="Reading file: chunk2", tool_calls=[], raw_response=None)
       model_client.generate_stream = mock_stream
       
       memory = MagicMock()
@@ -608,17 +588,22 @@
       channel = MagicMock()
       channel.send_stream_chunk = AsyncMock()
       channel.send_message = AsyncMock()
+      # Stub filter stripping thoughts
+      channel.filter_content = lambda x: x.replace("Reading file: ", "")
 
       result = await harness.execute_turn(ctx, channel, Message(role="user", content="Hello"))
-      assert result.response.content == "chunk1chunk2"
-      assert channel.send_stream_chunk.call_count == 2
+      assert result.response.content == "Reading file: chunk1Reading file: chunk2"
+      
+      # Verify that filtered content was sent to stream
+      channel.send_stream_chunk.assert_any_call("session-stream", "chunk1")
+      channel.send_stream_chunk.assert_any_call("session-stream", "chunk2")
   ```
 
 - [ ] **Step 2: Run test to verify it fails**
   Run: `pytest tests/test_harness.py -v`
   Expected: FAIL (ModuleNotFoundError: No module named 'jarvis.harness')
 
-- [ ] **Step 3: Implement execute_turn streaming logic**
+- [ ] **Step 3: Implement execute_turn streaming and filtering logic**
   Create `jarvis/harness.py`:
   ```python
   from typing import Optional, Any, Callable, list
@@ -677,7 +662,10 @@
           async for response_chunk in self.model_client.generate_stream(history, tools=tools):
               if response_chunk.content:
                   accumulated_text += response_chunk.content
-                  await channel.send_stream_chunk(session_ctx.session_id, response_chunk.content)
+                  # Filter channel content before streaming
+                  filtered_chunk = channel.filter_content(response_chunk.content)
+                  if filtered_chunk:
+                      await channel.send_stream_chunk(session_ctx.session_id, filtered_chunk)
               if response_chunk.tool_calls:
                   final_tool_calls.extend(response_chunk.tool_calls)
 
@@ -686,12 +674,21 @@
           for hook in self.post_message_hooks:
               await hook(session_ctx, final_response)
 
+          # Save full raw message history
           assistant_msg = Message(role="assistant", content=accumulated_text)
           await self.memory_engine.save_history(session_ctx, [assistant_msg])
-          await channel.send_message(session_ctx.session_id, assistant_msg)
+          
+          # Send filtered final message to channel
+          filtered_message = Message(
+              role="assistant",
+              content=channel.filter_content(accumulated_text),
+              attachments=assistant_msg.attachments,
+              native_actions=assistant_msg.native_actions,
+              metadata=assistant_msg.metadata
+          )
+          await channel.send_message(session_ctx.session_id, filtered_message)
 
           tool_results = []
-          # Handle tool execution here if tools are present
           
           return TurnResult(
               response=final_response,
