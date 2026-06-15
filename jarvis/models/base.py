@@ -34,3 +34,8 @@ class BaseModelClient:
     async def generate_stream(self, messages: list[Message], tools: list[Any]) -> AsyncGenerator[ModelResponse, None]:
         raise NotImplementedError
         yield
+
+class TurnRequest(BaseModel):
+    content: str
+    channel: str
+    channel_params: Optional[dict[str, Any]] = None

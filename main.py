@@ -9,7 +9,7 @@ from pydantic import BaseModel
 from jarvis.config import load_session_config
 from jarvis.memory.base import SessionContext
 from jarvis.memory.jsonl import JSONLMemoryEngine
-from jarvis.models.base import Message
+from jarvis.models.base import Message, TurnRequest
 from jarvis.harness import AgentHarness
 
 from jarvis.models.openai import OpenAIClient
@@ -17,7 +17,7 @@ from jarvis.models.openai_compatible import OpenAICompatibleClient
 from jarvis.models.anthropic import AnthropicClient
 from jarvis.models.gemini import GeminiClient
 
-from jarvis.channels.base import QueueChannel
+from jarvis.channels.base import QueueChannel, BaseChannel
 from jarvis.channels.webhook import WebhookChannel
 from jarvis.channels.discord import DiscordChannel
 from jarvis.channels.qq import QQChannel
@@ -29,10 +29,7 @@ app = FastAPI(title="Jarvis Daemon Gateway")
 # Keep strong references to running background tasks to prevent GC mid-execution
 running_tasks: set[asyncio.Task] = set()
 
-class TurnRequest(BaseModel):
-    content: str
-    channel: str
-    channel_params: Optional[Dict[str, Any]] = None
+# TurnRequest has been relocated to jarvis.models.base
 
 def instantiate_model_client(cfg):
     provider = cfg.model.provider.lower()
@@ -96,6 +93,47 @@ def instantiate_channel(channel_name: str, params: Optional[Dict[str, Any]]):
     else:
         raise ValueError(f"Unknown channel: {channel_name}")
 
+active_channels: dict[str, BaseChannel] = {}
+
+async def harness_runner_callback(session_id: str, channel: BaseChannel, content: str):
+    session_cfg = load_session_config(session_id)
+    model_client = instantiate_model_client(session_cfg)
+    history_dir = os.getenv("JARVIS_HISTORY_DIR", "")
+    if history_dir:
+        os.makedirs(history_dir, exist_ok=True)
+    history_path = os.path.join(history_dir, f"history_{session_id}.jsonl") if history_dir else f"history_{session_id}.jsonl"
+    memory_engine = JSONLMemoryEngine(file_path=history_path)
+    
+    session_ctx = SessionContext(session_id=session_id)
+    user_message = Message(role="user", content=content)
+    
+    harness = AgentHarness(
+        config=session_cfg.harness,
+        model_client=model_client,
+        memory_engine=memory_engine,
+        mcp_manager=None,
+        skills_manager=None
+    )
+    
+    task = asyncio.create_task(harness.execute_turn(session_ctx, channel, user_message))
+    running_tasks.add(task)
+    task.add_done_callback(running_tasks.discard)
+
+async def get_or_create_channel(channel_name: str, params: dict, harness_runner_callback):
+    key = channel_name.lower()
+    if key in active_channels:
+        return active_channels[key]
+    
+    channel = instantiate_channel(channel_name, params)
+    active_channels[key] = channel
+    
+    if hasattr(channel, "start"):
+        async def on_message(session_id: str, content: str):
+            await harness_runner_callback(session_id, channel, content)
+        await channel.start(on_message)
+        
+    return channel
+
 
 
 async def run_turn_sse(harness: AgentHarness, session_ctx: SessionContext, channel: QueueChannel, user_message: Message):
@@ -130,7 +168,10 @@ async def execute_session_turn(session_id: str, request: TurnRequest):
 
     # 4. Instantiate channel and catch bad input parameters
     try:
-        channel = instantiate_channel(request.channel, request.channel_params)
+        if request.channel.lower() == "sse":
+            channel = instantiate_channel(request.channel, request.channel_params)
+        else:
+            channel = await get_or_create_channel(request.channel, request.channel_params or {}, harness_runner_callback)
     except (ValueError, TypeError, KeyError) as e:
         raise HTTPException(status_code=400, detail=f"Invalid channel or parameters: {str(e)}")
 
