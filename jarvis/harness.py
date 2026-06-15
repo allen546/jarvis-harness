@@ -63,9 +63,6 @@ class AgentHarness:
 
         final_response = ModelResponse(content=accumulated_text, tool_calls=final_tool_calls, raw_response=None)
 
-        for hook in self.post_message_hooks:
-            await hook(session_ctx, final_response)
-
         # Save full raw message history
         assistant_msg = Message(role="assistant", content=accumulated_text)
         await self.memory_engine.save_history(session_ctx, [assistant_msg])
@@ -79,6 +76,9 @@ class AgentHarness:
             metadata=assistant_msg.metadata
         )
         await channel.send_message(session_ctx.session_id, filtered_message)
+
+        for hook in self.post_message_hooks:
+            await hook(session_ctx, final_response)
 
         tool_results = []
         
