@@ -97,7 +97,8 @@ async def test_search_semantic_memory_tool(tmp_path: Path):
             http_client=client
         )
         
-        from jarvis.memory_store import current_context, search_semantic_memory_tool
+        from jarvis.runtime import current_context
+        from jarvis.memory_store import search_semantic_memory_tool
         
         ctx = AgentContext(
             config=RuntimeConfig(),

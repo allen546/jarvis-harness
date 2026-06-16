@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Callable
 
@@ -9,6 +10,8 @@ from jarvis.events import AgentEvent
 from jarvis.hooks import TurnHook
 from jarvis.models.base import BaseModelClient, Message, get_model_class
 from jarvis.tools import ToolRegistry
+
+current_context: ContextVar[AgentContext | None] = ContextVar("current_context", default=None)
 
 
 @dataclass(slots=True)
@@ -41,10 +44,14 @@ class AgentSession:
 
     async def submit(self, message: Message) -> AsyncIterator[AgentEvent]:
         async with self._lock:
-            async for event in self.kernel.run_turn(self.ctx, message):  # type: ignore[attr-defined]
-                if self.ctx.emit_event is not None:
-                    self.ctx.emit_event(event)
-                yield event
+            token = current_context.set(self.ctx)
+            try:
+                async for event in self.kernel.run_turn(self.ctx, message):  # type: ignore[attr-defined]
+                    if self.ctx.emit_event is not None:
+                        self.ctx.emit_event(event)
+                    yield event
+            finally:
+                current_context.reset(token)
 
 
 def context_from_config(config: SessionConfig, tools: ToolRegistry, hooks: list[TurnHook] | None = None) -> AgentContext:

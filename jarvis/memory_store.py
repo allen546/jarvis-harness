@@ -4,32 +4,17 @@ import os
 import json
 import math
 import inspect
+import asyncio
 from pathlib import Path
 from typing import Any
-from contextvars import ContextVar
 
 from jarvis.hooks import NoopTurnHook, HookResult
 from jarvis.models.base import Message
 
-# Context variable to hold the active agent context for the current asyncio Task
-current_context: ContextVar[Any | None] = ContextVar("current_context", default=None)
-
 
 def get_context() -> Any | None:
-    # 1. Try retrieving from ContextVar
-    ctx = current_context.get()
-    if ctx is not None:
-        return ctx
-
-    # 2. Walk the call stack to find AgentContext in f_locals
-    for frame_info in inspect.stack():
-        f_locals = frame_info.frame.f_locals
-        if "ctx" in f_locals:
-            val = f_locals["ctx"]
-            # Check if it has attributes matching AgentContext structure
-            if hasattr(val, "session") and hasattr(val, "config"):
-                return val
-    return None
+    from jarvis.runtime import current_context
+    return current_context.get()
 
 
 def cosine_similarity(v1: list[float], v2: list[float]) -> float:
@@ -44,6 +29,14 @@ def cosine_similarity(v1: list[float], v2: list[float]) -> float:
 
 
 class SemanticMemoryStore:
+    _locks: dict[str, asyncio.Lock] = {}
+
+    @classmethod
+    def _get_lock(cls, session_id: str) -> asyncio.Lock:
+        if session_id not in cls._locks:
+            cls._locks[session_id] = asyncio.Lock()
+        return cls._locks[session_id]
+
     def __init__(self, storage_dir: str, embedding_url: str, http_client: Any | None = None) -> None:
         self.storage_dir = storage_dir
         self.embedding_url = embedding_url
@@ -65,8 +58,10 @@ class SemanticMemoryStore:
     def _save(self, session_id: str, memories: list[dict[str, Any]]) -> None:
         path = self._get_file_path(session_id)
         path.parent.mkdir(parents=True, exist_ok=True)
-        with open(path, "w", encoding="utf-8") as f:
+        tmp_path = path.with_suffix(".tmp")
+        with open(tmp_path, "w", encoding="utf-8") as f:
             json.dump(memories, f, indent=2)
+        os.replace(tmp_path, path)
 
     async def _get_embedding(self, text: str) -> list[float]:
         json_data = {"text": text}
@@ -86,13 +81,14 @@ class SemanticMemoryStore:
 
     async def add_memory(self, session_id: str, text: str, tags: list[str]) -> None:
         embedding = await self._get_embedding(text)
-        memories = self._load(session_id)
-        memories.append({
-            "text": text,
-            "tags": list(tags),
-            "embedding": embedding,
-        })
-        self._save(session_id, memories)
+        async with self._get_lock(session_id):
+            memories = self._load(session_id)
+            memories.append({
+                "text": text,
+                "tags": list(tags),
+                "embedding": embedding,
+            })
+            self._save(session_id, memories)
 
     async def search(self, session_id: str, query: str, tag: str | None = None, limit: int = 5) -> list[dict[str, Any]]:
         memories = self._load(session_id)
@@ -130,69 +126,75 @@ class SemanticMemoryHook(NoopTurnHook):
         self.http_client = http_client
 
     async def before_model(self, ctx: object, messages: list[Message]) -> HookResult:
+        from jarvis.runtime import current_context
         current_context.set(ctx)
         return HookResult()
 
     async def after_turn(self, ctx: object, message: Message) -> HookResult:
-        current_context.set(ctx)
-        
-        session = getattr(ctx, "session", None)
-        if not session or not session.history:
-            return HookResult()
+        try:
+            from jarvis.runtime import current_context
+            current_context.set(ctx)
+            
+            session = getattr(ctx, "session", None)
+            if not session or not session.history:
+                return HookResult()
 
-        # Compile latest user and assistant messages
-        user_msg = None
-        assistant_msg = None
-        for msg in reversed(session.history):
-            if msg.role == "user" and user_msg is None:
-                user_msg = msg
-            elif msg.role == "assistant" and assistant_msg is None:
-                assistant_msg = msg
-            if user_msg is not None and assistant_msg is not None:
-                break
+            # Compile latest user and assistant messages
+            user_msg = None
+            assistant_msg = None
+            for msg in reversed(session.history):
+                if msg.role == "user" and user_msg is None:
+                    user_msg = msg
+                elif msg.role == "assistant" and assistant_msg is None:
+                    assistant_msg = msg
+                if user_msg is not None and assistant_msg is not None:
+                    break
 
-        compiled_parts = []
-        if user_msg:
-            compiled_parts.append(f"User: {user_msg.content}")
-        if assistant_msg:
-            compiled_parts.append(f"Assistant: {assistant_msg.content}")
+            compiled_parts = []
+            if user_msg:
+                compiled_parts.append(f"User: {user_msg.content}")
+            if assistant_msg:
+                compiled_parts.append(f"Assistant: {assistant_msg.content}")
 
-        if not compiled_parts:
-            return HookResult()
+            if not compiled_parts:
+                return HookResult()
 
-        compiled_text = "\n".join(compiled_parts)
+            compiled_text = "\n".join(compiled_parts)
 
-        # Call model to extract facts
-        system_prompt = (
-            "Extract key facts from the following messages. "
-            "Return each fact on a new line starting with 'Fact: '."
-        )
-        system_message = Message(role="system", content=system_prompt)
-        user_message = Message(role="user", content=compiled_text)
-
-        model = getattr(ctx, "model", None)
-        if not model:
-            return HookResult()
-
-        response = await model.generate([system_message, user_message], [])
-        
-        facts = []
-        if response and response.content:
-            for line in response.content.splitlines():
-                line = line.strip()
-                if line.startswith("Fact:"):
-                    fact = line[len("Fact:"):].strip()
-                    if fact:
-                        facts.append(fact)
-
-        if facts:
-            store = SemanticMemoryStore(
-                storage_dir=self.storage_dir,
-                embedding_url=self.embedding_url,
-                http_client=self.http_client,
+            # Call model to extract facts
+            system_prompt = (
+                "Extract key facts from the following messages. "
+                "Return each fact on a new line starting with 'Fact: '."
             )
-            for fact in facts:
-                await store.add_memory(session.id, fact, ["truths"])
+            system_message = Message(role="system", content=system_prompt)
+            user_message = Message(role="user", content=compiled_text)
+
+            model = getattr(ctx, "model", None)
+            if not model:
+                return HookResult()
+
+            response = await model.generate([system_message, user_message], [])
+            
+            facts = []
+            if response and response.content:
+                for line in response.content.splitlines():
+                    line = line.strip()
+                    if line.startswith("Fact:"):
+                        fact = line[len("Fact:"):].strip()
+                        if fact:
+                            facts.append(fact)
+
+            if facts:
+                store = SemanticMemoryStore(
+                    storage_dir=self.storage_dir,
+                    embedding_url=self.embedding_url,
+                    http_client=self.http_client,
+                )
+                for fact in facts:
+                    await store.add_memory(session.id, fact, ["truths"])
+        except Exception as exc:
+            import warnings
+            warnings.warn(f"Error in SemanticMemoryHook.after_turn: {exc}")
 
         return HookResult()
 
