@@ -83,10 +83,34 @@ def test_session_state_metadata_and_context_emit_event():
         config=RuntimeConfig(),
         session=state,
         model=dummy,
-        tools=None,
+        tools=ToolRegistry(),
         emit_event=cb
     )
     assert ctx.emit_event is not None
-    ctx.emit_event("dummy_event")
+    ctx.emit_event(MessageEvent(session_id="test_sess", message=Message(role="assistant", content="hello")))
     assert called is True
+
+
+@pytest.mark.asyncio
+async def test_agent_session_submit_bubbles_events() -> None:
+    events_emitted: list[Any] = []
+    def cb(event: Any) -> None:
+        events_emitted.append(event)
+
+    state = SessionState(id="s2")
+    ctx = AgentContext(
+        config=RuntimeConfig(),
+        session=state,
+        model=SlowModel(),
+        tools=ToolRegistry(),
+        hooks=[],
+        emit_event=cb
+    )
+    session = AgentSession(ctx=ctx, kernel=FakeKernel())
+    events = [event async for event in session.submit(Message(role="user", content="hello"))]
+
+    assert len(events) == 1
+    assert len(events_emitted) == 1
+    assert events_emitted[0] == events[0]
+
 

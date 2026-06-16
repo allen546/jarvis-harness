@@ -30,7 +30,7 @@ class AgentContext:
     model: BaseModelClient
     tools: ToolRegistry
     hooks: list[TurnHook] = field(default_factory=list)
-    emit_event: Callable[[Any], None] | None = None
+    emit_event: Callable[[AgentEvent], None] | None = None
 
 
 class AgentSession:
