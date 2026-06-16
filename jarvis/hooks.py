@@ -26,6 +26,8 @@ class TurnHook(Protocol):
 
 
 class NoopTurnHook:
+    __slots__ = ()
+
     async def before_model(self, ctx: object, messages: list[Message]) -> HookResult:
         return HookResult()
 

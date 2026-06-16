@@ -36,7 +36,7 @@ class AgentKernel:
 
                 if not response.tool_calls:
                     messages.append(assistant)
-                    ctx.session.history = self._without_system_prompt(messages)
+                    ctx.session.history = self._without_system_prompt(messages, ctx)
                     for hook in ctx.hooks:
                         result = await hook.after_turn(ctx, assistant)
                         if result.stop:
@@ -73,12 +73,14 @@ class AgentKernel:
             return
 
     def _with_system_prompt(self, ctx: AgentContext, messages: list[Message]) -> list[Message]:
-        if ctx.config.system_prompt and not any(message.role == "system" for message in messages):
+        if ctx.config.system_prompt and not any(m.role == "system" and m.content == ctx.config.system_prompt for m in messages):
             return [Message(role="system", content=ctx.config.system_prompt), *messages]
         return messages
 
-    def _without_system_prompt(self, messages: list[Message]) -> list[Message]:
-        return [message for message in messages if message.role != "system"]
+    def _without_system_prompt(self, messages: list[Message], ctx: AgentContext) -> list[Message]:
+        if ctx.config.system_prompt:
+            return [m for m in messages if not (m.role == "system" and m.content == ctx.config.system_prompt)]
+        return messages
 
     async def _run_before_model(self, ctx: AgentContext, messages: list[Message]) -> HookResult:
         current = messages
