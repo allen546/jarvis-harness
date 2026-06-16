@@ -36,7 +36,7 @@ The kernel is transport-agnostic. It must not import FastAPI, CLI code, MCP clie
 - Defines `AgentKernel`.
 - Exposes `run_turn(ctx: AgentContext, user_message: Message) -> AsyncIterator[AgentEvent]`.
 - Owns the model/tool loop and event emission.
-- Enforces `max_tool_rounds`.
+- Calls hooks at lifecycle checkpoints and honors hook stop decisions.
 
 `jarvis/runtime.py`
 
@@ -63,12 +63,15 @@ The kernel is transport-agnostic. It must not import FastAPI, CLI code, MCP clie
 
 `jarvis/hooks.py`
 
-- Defines hook protocols:
-  - `PreMessageHook`
-  - `PostMessageHook`
-  - `PostToolHook`
+- Defines one hook protocol with lifecycle checkpoints:
+  - `before_model`
+  - `after_model`
+  - `before_tool`
+  - `after_tool`
+  - `after_turn`
+- Defines `HookResult`, which can update messages, skip a tool call, stop the turn, or attach a reason.
 - Memory behavior is implemented through hooks and optional tools.
-- Hooks can load context, trim history, summarize, persist messages, index content, or audit tool usage.
+- Hooks can load context, trim history, summarize, persist messages, index content, audit tool usage, enforce budgets, or stop degenerate loops.
 
 `jarvis/transports/cli.py`
 
@@ -115,16 +118,45 @@ Future transports:
 
 1. A transport receives input and creates a `Message` with role `user`.
 2. `AgentKernel.run_turn(...)` appends the user message to `ctx.session.history`.
-3. Pre-message hooks receive the context and working message list.
-4. Hooks may return a modified message list.
+3. `before_model` hooks receive the context and working message list.
+4. Hooks may return modified messages or request that the turn stop.
 5. The kernel calls `ctx.model.generate(messages, tool_schemas)`.
-6. If the model returns content, the kernel emits text/message events.
-7. If the model returns tool calls, the kernel emits tool call events and executes them through `ToolRegistry`.
-8. Tool results are appended to the working messages and emitted as tool result events.
-9. The kernel repeats model generation until there are no tool calls or `max_tool_rounds` is reached.
-10. The final assistant message is appended to session history.
-11. Post-message hooks run after the final assistant message.
-12. The transport renders the event stream.
+6. `after_model` hooks observe the response and may request that the turn stop.
+7. If the model returns content, the kernel emits text/message events.
+8. If the model returns tool calls, the kernel emits tool call events.
+9. `before_tool` hooks observe each tool call and may request that the call or turn stop.
+10. Allowed tool calls execute through `ToolRegistry`.
+11. Tool results are appended to the working messages and emitted as tool result events.
+12. `after_tool` hooks observe each tool result and may request that the turn stop.
+13. The kernel repeats model generation until there are no tool calls or a hook requests stop.
+14. The final assistant message is appended to session history.
+15. `after_turn` hooks run after the final assistant message.
+16. The transport renders the event stream.
+
+## Hook Checkpoints
+
+Hooks are the single extension mechanism for memory, policy, budgets, and circuit breakers. The kernel does not have a separate guard system.
+
+`HookResult` should stay small:
+
+- `messages`: optional replacement for the working message list, allowed only at checkpoints that accept message mutation.
+- `skip_tool`: whether the current tool call should be skipped, allowed only at `before_tool`.
+- `stop`: whether the kernel should stop the current turn.
+- `reason`: optional human-readable skip or stop reason.
+
+The kernel is responsible for calling hooks at the right checkpoints and applying the allowed result fields. Hook implementations own policy.
+
+Examples:
+
+- Memory loading: `before_model` injects recent history or summaries.
+- Context trimming: `before_model` replaces the working message list.
+- Persistence: `after_turn` stores final messages.
+- Tool budget: `before_tool` stops when a turn exceeds a configured tool count.
+- Repeated tool loop detection: `before_tool` stops when the same tool and normalized arguments repeat too often.
+- Repeated content detection: `after_model` stops when identical assistant content repeats too often.
+- Risk control: `before_tool` skips or stops risky built-in tool calls.
+
+The only behavior that remains hardcoded in the kernel is runtime mechanics required to operate the async loop, such as cancellation propagation and emitting an error event when an exception escapes a dependency.
 
 ## Tool System
 
@@ -158,10 +190,10 @@ Memory is not a central subsystem.
 
 Memory-like behavior belongs in hooks and tools:
 
-- A pre-message hook can load recent history or summaries.
-- A pre-message hook can trim context.
-- A post-message hook can persist messages.
-- A post-message hook can update summaries or indexes.
+- A `before_model` hook can load recent history or summaries.
+- A `before_model` hook can trim context.
+- An `after_turn` hook can persist messages.
+- An `after_turn` hook can update summaries or indexes.
 - A tool can expose explicit recall/search behavior to the model.
 
 This keeps the kernel small and allows multiple memory strategies without adding another core interface.
@@ -182,14 +214,14 @@ This avoids a second harness hierarchy and keeps subagents as recursive kernel u
 
 ## Error Handling
 
-The kernel should emit `ErrorEvent` for model and tool failures before raising or returning, depending on the failure type.
+The kernel should emit `ErrorEvent` when a dependency failure escapes normal hook/tool handling. Policy decisions, including loop limits and budget stops, belong in hooks.
 
 Expected behavior:
 
 - Unknown tool: append a tool result explaining the missing tool and continue the loop.
-- Tool exception: emit a failed tool result and continue unless config says tool failures are fatal.
+- Tool exception: emit a failed tool result and continue unless a hook requests that the turn stop.
 - Model exception: emit `ErrorEvent` and stop the turn.
-- Max tool rounds exceeded: emit `ErrorEvent`, append a final assistant-facing failure message, and stop the turn.
+- Hook stop decision: emit a stop/error event with the hook-provided reason and stop the turn.
 
 The gateway decides how to serialize errors to SSE. The CLI decides how to print them.
 
@@ -199,9 +231,9 @@ Replace stale harness/channel/memory tests with a small contract suite:
 
 - Kernel emits a final message for a simple model response.
 - Kernel executes one tool call, appends the tool result, and loops back to the model.
-- Kernel stops at `max_tool_rounds`.
-- Pre-message hooks can modify the working message list.
-- Post-message hooks observe the final response.
+- `before_model` hooks can modify the working message list.
+- Hook stop decisions stop the turn at model and tool checkpoints.
+- `after_turn` hooks observe the final response.
 - Tool registry resolves built-ins and reports unknown tools cleanly.
 - Gateway SSE serializes kernel events.
 - CLI transport can submit a message to the kernel and render a final event.
@@ -223,6 +255,7 @@ Tests should focus on contracts at the kernel boundary. Provider-specific tests 
 - The gateway can run a turn and stream events over SSE.
 - The CLI can run the same turn loop without separate agent logic.
 - The kernel has no transport imports.
+- Hooks are the only policy/circuit-breaker extension mechanism.
 - Memory is implemented only through hooks/tools, not a core memory engine.
 - Built-in tools, MCP tools, and skills are exposed through one registry.
 - Subagents can later be implemented as a tool without changing the kernel API.
