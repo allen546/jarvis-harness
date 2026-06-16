@@ -122,6 +122,87 @@ def builtin_tools(root: Path | str = ".") -> list[Tool]:
             }
         }
     }
+
+    async def spawn_subagent_handler(args: dict[str, Any]) -> str:
+        from jarvis.runtime import current_context
+        from jarvis.subagent import spawn_subagent_tool
+        import json
+        ctx = current_context.get()
+        if ctx is None:
+            raise RuntimeError("No active agent context")
+        res = await spawn_subagent_tool(ctx, args)
+        return json.dumps(res)
+
+    async def send_subagent_message_handler(args: dict[str, Any]) -> str:
+        from jarvis.runtime import current_context
+        from jarvis.subagent import send_subagent_message_tool
+        import json
+        ctx = current_context.get()
+        if ctx is None:
+            raise RuntimeError("No active agent context")
+        res = await send_subagent_message_tool(ctx, args)
+        return json.dumps(res)
+
+    async def close_subagent_handler(args: dict[str, Any]) -> str:
+        from jarvis.runtime import current_context
+        from jarvis.subagent import close_subagent_tool
+        import json
+        ctx = current_context.get()
+        if ctx is None:
+            raise RuntimeError("No active agent context")
+        res = await close_subagent_tool(ctx, args)
+        return json.dumps(res)
+
+    spawn_subagent_params = {
+        "type": "object",
+        "properties": {
+            "prompts": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "List of prompts/messages for the subagent to process."
+            },
+            "prompt": {
+                "type": "string",
+                "description": "Alternative single prompt for the subagent to process."
+            },
+            "task_name": {
+                "type": "string",
+                "description": "Name or description of the subtask."
+            },
+            "system_override": {
+                "type": "string",
+                "description": "Optional custom system prompt override for the subagent."
+            }
+        },
+        "required": ["task_name"]
+    }
+
+    send_subagent_message_params = {
+        "type": "object",
+        "properties": {
+            "sub_session_id": {
+                "type": "string",
+                "description": "The session ID of the target subagent."
+            },
+            "message": {
+                "type": "string",
+                "description": "The follow-up message to send."
+            }
+        },
+        "required": ["sub_session_id", "message"]
+    }
+
+    close_subagent_params = {
+        "type": "object",
+        "properties": {
+            "sub_session_id": {
+                "type": "string",
+                "description": "The session ID of the subagent to close."
+            }
+        },
+        "required": ["sub_session_id"]
+    }
+
     return [
         Tool("list_files", "List files under a workspace path.", object_params, list_files),
         Tool("read_file", "Read a UTF-8 text file under the workspace.", object_params, read_file),
@@ -129,4 +210,7 @@ def builtin_tools(root: Path | str = ".") -> list[Tool]:
         Tool("run_command", "Run a shell command. Policy hooks decide whether it is allowed.", object_params, run_command),
         Tool("search_semantic_memory", "Search semantic memory for previously stored facts and history.", search_params, search_semantic_memory_tool),
         Tool("purge_semantic_memory", "Purge specific items or tags from semantic memory.", purge_params, purge_semantic_memory_tool),
+        Tool("spawn_subagent", "Spawn a collaborative subagent to handle a specific task.", spawn_subagent_params, spawn_subagent_handler),
+        Tool("send_subagent_message", "Send a message to an active subagent.", send_subagent_message_params, send_subagent_message_handler),
+        Tool("close_subagent", "Close an active subagent and clean up resources.", close_subagent_params, close_subagent_handler),
     ]
