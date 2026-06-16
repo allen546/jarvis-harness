@@ -19,15 +19,14 @@ The gateway is the product boundary. The CLI is only the smallest local transpor
 The architecture has one kernel surrounded by ports:
 
 ```text
-Transport -> Message -> AgentKernel -> AgentEvent stream -> Transport
-                         |
-                         +-> ModelClient
-                         +-> ToolRegistry
-                         +-> Hooks
-                         +-> SessionState
+Transport -> Message -> AgentSession -> AgentKernel -> AgentEvent stream -> Transport
+                                      |
+                                      +-> AgentContext
+                                      +-> per-session turn serialization
+                                      +-> cancellation/busy policy
 ```
 
-The kernel is transport-agnostic. It must not import FastAPI, CLI code, MCP client implementations, skill loaders, or future Discord/QQ adapters. Those pieces construct dependencies and feed messages into the kernel.
+The kernel is transport-agnostic. It must not import FastAPI, CLI code, MCP client implementations, skill loaders, or future Discord/QQ adapters. Those pieces construct dependencies and submit messages through `AgentSession`.
 
 ### Modules
 
@@ -40,9 +39,11 @@ The kernel is transport-agnostic. It must not import FastAPI, CLI code, MCP clie
 
 `jarvis/runtime.py`
 
-- Defines `AgentContext`, `SessionState`, and `RuntimeConfig`.
+- Defines `AgentSession`, `AgentContext`, `SessionState`, and `RuntimeConfig`.
+- `AgentSession.submit(message: Message) -> AsyncIterator[AgentEvent]` is the only public entrypoint transports use to run turns.
 - Holds the session id, model client, tool registry, hooks, config, and message history.
-- Keeps long-lived runtime state out of the kernel implementation.
+- Serializes turns per session with a lock or queue so two messages cannot mutate the same session context concurrently.
+- Keeps long-lived runtime state, cancellation behavior, and busy policy out of the kernel implementation.
 
 `jarvis/events.py`
 
@@ -51,8 +52,9 @@ The kernel is transport-agnostic. It must not import FastAPI, CLI code, MCP clie
   - `ToolCallEvent`
   - `ToolResultEvent`
   - `MessageEvent`
+  - `NativeActionEvent`
   - `ErrorEvent`
-- Events are the only output surface the gateway and CLI need.
+- Events are the only output surface transports need.
 
 `jarvis/tools.py`
 
@@ -76,7 +78,7 @@ The kernel is transport-agnostic. It must not import FastAPI, CLI code, MCP clie
 `jarvis/transports/cli.py`
 
 - Implements the minimal interactive CLI transport.
-- Reads user input, creates `Message(role="user", content=line)`, calls the kernel, and renders events.
+- Reads user input, creates `Message(role="user", content=line)`, submits it to `AgentSession`, and renders events.
 - Exists for local operation and debugging, not as the primary product boundary.
 
 `main.py`
@@ -94,10 +96,19 @@ A transport can:
 
 1. Receive user input.
 2. Convert that input into a `Message`.
-3. Call `AgentKernel.run_turn(...)`.
+3. Submit the message to `AgentSession`.
 4. Render `AgentEvent`s back to the user or client.
 
 The kernel never calls `channel.send_message()`, `channel.send_stream_chunk()`, or `channel.filter_content()`. Output filtering, presentation, buffering, and protocol-specific behavior belong in transports.
+
+Transports may still expose channel-specific capabilities. They do this by contributing transport-scoped tools, native actions, or renderers to the session runtime:
+
+- Emoji reactions can be exposed as a channel-native tool such as `discord_add_reaction`.
+- Native media replies can be represented as message attachments or `NativeActionEvent`s.
+- Thread replies, mentions, quoting, embeds, and protocol-specific message references live in message metadata and transport renderers.
+- A transport decides which native actions it supports and how to render unsupported ones.
+
+This keeps quirks available without letting them leak into `AgentKernel`.
 
 Current transport:
 
@@ -117,21 +128,25 @@ Future transports:
 ## Turn Flow
 
 1. A transport receives input and creates a `Message` with role `user`.
-2. `AgentKernel.run_turn(...)` appends the user message to `ctx.session.history`.
-3. `before_model` hooks receive the context and working message list.
-4. Hooks may return modified messages or request that the turn stop.
-5. The kernel calls `ctx.model.generate(messages, tool_schemas)`.
-6. `after_model` hooks observe the response and may request that the turn stop.
-7. If the model returns content, the kernel emits text/message events.
-8. If the model returns tool calls, the kernel emits tool call events.
-9. `before_tool` hooks observe each tool call and may request that the call or turn stop.
-10. Allowed tool calls execute through `ToolRegistry`.
-11. Tool results are appended to the working messages and emitted as tool result events.
-12. `after_tool` hooks observe each tool result and may request that the turn stop.
-13. The kernel repeats model generation until there are no tool calls or a hook requests stop.
-14. The final assistant message is appended to session history.
-15. `after_turn` hooks run after the final assistant message.
-16. The transport renders the event stream.
+2. The transport submits the message to `AgentSession`.
+3. `AgentSession` serializes the turn for that session and calls `AgentKernel.run_turn(...)`.
+4. `AgentKernel.run_turn(...)` appends the user message to `ctx.session.history`.
+5. `before_model` hooks receive the context and working message list.
+6. Hooks may return modified messages or request that the turn stop.
+7. The kernel calls `ctx.model.generate(messages, tool_schemas)`.
+8. `after_model` hooks observe the response and may request that the turn stop.
+9. If the model returns content, the kernel emits text/message events.
+10. If the assistant message contains native actions, the kernel emits native action events.
+11. If the model returns tool calls, the kernel emits tool call events.
+12. `before_tool` hooks observe each tool call and may request that the call or turn stop.
+13. Allowed tool calls execute through `ToolRegistry`.
+14. Tool results are appended to the working messages and emitted as tool result events.
+15. `after_tool` hooks observe each tool result and may request that the turn stop.
+16. The kernel repeats model generation until there are no tool calls or a hook requests stop.
+17. The final assistant message is appended to session history.
+18. `after_turn` hooks run after the final assistant message.
+19. `AgentSession` releases the session for the next queued turn.
+20. The transport renders the event stream.
 
 ## Hook Checkpoints
 
@@ -173,6 +188,7 @@ Retained tool sources:
 
 - MCP tools
 - Skills
+- Transport-scoped native tools
 
 The registry is responsible for:
 
@@ -183,6 +199,25 @@ The registry is responsible for:
 - Returning a clean unknown-tool result when the model calls a missing tool.
 
 The kernel should not know whether a tool came from a built-in, MCP server, or skill.
+The kernel also should not know whether a tool is transport-native. For example, `add_reaction` and `send_native_media` are tools registered by a Discord transport or gateway session, not kernel branches.
+
+## Native Messages And Actions
+
+The message model should preserve native channel information without making the kernel channel-aware.
+
+Input messages may include:
+
+- `attachments` for media and files.
+- `native_actions` for protocol-specific incoming events.
+- `metadata` for channel id, thread id, message id, author id, reply target, mentions, and other transport data.
+
+Output can use:
+
+- plain assistant `Message` content for portable text.
+- attachments for media replies.
+- `NativeActionEvent` for protocol-specific output that does not fit plain text, such as emoji reactions, quote replies, embeds, or platform-native cards.
+
+Transports are responsible for rendering these outputs. CLI can print a readable fallback for native actions. Gateway SSE can serialize them as structured events. Discord/QQ can map them to platform APIs.
 
 ## Memory
 
@@ -205,9 +240,9 @@ Subagents should be easy to add after the base loop works, but they are not part
 When added, a subagent should be a tool implementation:
 
 1. `spawn_subagent` receives a prompt and optional scope.
-2. The tool creates a child `AgentContext`.
-3. The child context inherits selected model, tool, hook, and config dependencies.
-4. The tool calls `AgentKernel.run_turn(...)` for the child.
+2. The tool creates a child `AgentSession` with its own `AgentContext`.
+3. The child context inherits selected model, tool, hook, transport-native capability, and config dependencies.
+4. The tool submits the prompt to the child session.
 5. The tool returns the child agent's final answer as a tool result.
 
 This avoids a second harness hierarchy and keeps subagents as recursive kernel use.
@@ -236,7 +271,8 @@ Replace stale harness/channel/memory tests with a small contract suite:
 - `after_turn` hooks observe the final response.
 - Tool registry resolves built-ins and reports unknown tools cleanly.
 - Gateway SSE serializes kernel events.
-- CLI transport can submit a message to the kernel and render a final event.
+- CLI transport can submit a message to an `AgentSession` and render a final event.
+- Native action events can be rendered or safely ignored by transports that do not support them.
 
 Tests should focus on contracts at the kernel boundary. Provider-specific tests should remain in the model adapter layer.
 
@@ -244,18 +280,22 @@ Tests should focus on contracts at the kernel boundary. Provider-specific tests 
 
 1. Add `events.py`, `runtime.py`, `tools.py`, `hooks.py`, and `kernel.py`.
 2. Move the current incomplete loop from `agent.py` into `AgentKernel`.
-3. Replace `Channel` usage with transport-specific code.
+3. Add `AgentSession` as the serialized runtime entrypoint for transports.
 4. Rebuild CLI as a thin transport.
 5. Rebuild gateway SSE on top of kernel events.
-6. Delete or rewrite stale tests that import removed modules.
-7. Add the minimal contract tests listed above.
+6. Replace `Channel` usage with transport-specific code and native capability registration.
+7. Delete or rewrite stale tests that import removed modules.
+8. Add the minimal contract tests listed above.
 
 ## Acceptance Criteria
 
 - The gateway can run a turn and stream events over SSE.
 - The CLI can run the same turn loop without separate agent logic.
+- Transports submit turns through `AgentSession`, not directly to `AgentKernel`.
+- Turns are serialized per session.
 - The kernel has no transport imports.
 - Hooks are the only policy/circuit-breaker extension mechanism.
 - Memory is implemented only through hooks/tools, not a core memory engine.
 - Built-in tools, MCP tools, and skills are exposed through one registry.
+- Transport-native tools/actions preserve channel quirks without kernel imports.
 - Subagents can later be implemented as a tool without changing the kernel API.
