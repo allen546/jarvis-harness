@@ -73,6 +73,11 @@ class Message:
             "metadata": self.metadata,
         }
 
+    @classmethod
+    def model_validate(cls, data: dict[str, Any]) -> Message:
+        return cls(**data)
+
+
 
 @dataclass(slots=True)
 class ToolCall:
