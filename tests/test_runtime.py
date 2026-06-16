@@ -59,3 +59,34 @@ def test_hook_result_defaults() -> None:
     assert result.skip_tool is False
     assert result.stop is False
     assert result.reason is None
+
+
+class DummyModel(BaseModelClient):
+    @classmethod
+    def from_cfg(cls, cfg): return cls()
+    async def generate(self, messages, tools): return None
+
+
+def test_session_state_metadata_and_context_emit_event():
+    # Verify metadata is supported on SessionState
+    state = SessionState(id="test_sess", metadata={"foo": "bar"})
+    assert state.metadata["foo"] == "bar"
+
+    # Verify emit_event callback is present on AgentContext
+    dummy = DummyModel()
+    called = False
+    def cb(event):
+        nonlocal called
+        called = True
+
+    ctx = AgentContext(
+        config=RuntimeConfig(),
+        session=state,
+        model=dummy,
+        tools=None,
+        emit_event=cb
+    )
+    assert ctx.emit_event is not None
+    ctx.emit_event("dummy_event")
+    assert called is True
+

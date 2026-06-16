@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
-from typing import AsyncIterator
+from typing import Any, AsyncIterator, Callable
 
 from jarvis.config import SessionConfig
 from jarvis.events import AgentEvent
@@ -20,6 +20,7 @@ class RuntimeConfig:
 class SessionState:
     id: str
     history: list[Message] = field(default_factory=list)
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -29,6 +30,7 @@ class AgentContext:
     model: BaseModelClient
     tools: ToolRegistry
     hooks: list[TurnHook] = field(default_factory=list)
+    emit_event: Callable[[Any], None] | None = None
 
 
 class AgentSession:
@@ -40,6 +42,8 @@ class AgentSession:
     async def submit(self, message: Message) -> AsyncIterator[AgentEvent]:
         async with self._lock:
             async for event in self.kernel.run_turn(self.ctx, message):  # type: ignore[attr-defined]
+                if self.ctx.emit_event is not None:
+                    self.ctx.emit_event(event)
                 yield event
 
 
