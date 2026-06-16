@@ -101,4 +101,43 @@ class JSONLHistoryHook(NoopTurnHook):
         return HookResult()
 
 
+class ContextCompressionHook(NoopTurnHook):
+    __slots__ = ("threshold", "compress_count")
+
+    def __init__(self, threshold: int = 20, compress_count: int = 10) -> None:
+        self.threshold = threshold
+        self.compress_count = compress_count
+
+    async def before_model(self, ctx: object, messages: list[Message]) -> HookResult:
+        session = getattr(ctx, "session")
+        model = getattr(ctx, "model")
+        if len(session.history) >= self.threshold:
+            to_compress = session.history[:self.compress_count]
+            remaining = session.history[self.compress_count:]
+            
+            prompt_msgs = [
+                Message(role="system", content="Summarize the following chat history concisely:"),
+                *to_compress
+            ]
+            response = await model.generate(prompt_msgs, [])
+            summary_content = response.content or "No summary"
+            summary_msg = Message(role="system", content=f"[Summary of previous conversation: {summary_content}]")
+            
+            session.history = [summary_msg] + remaining
+            
+            # Rebuild the messages list that we return to the kernel loop
+            # Note: the kernel uses messages (which is built using history and system prompt).
+            # If the user's turn has a system prompt, kernel._with_system_prompt prepend it.
+            # We can update the messages to contain the new history (including summary).
+            new_messages = list(session.history)
+            if any(m.role == "system" for m in messages):
+                # If there's an active system prompt, preserve it at the very top.
+                sys_msgs = [m for m in messages if m.role == "system" and not m.content.startswith("[Summary of")]
+                new_messages = sys_msgs + new_messages
+            
+            return HookResult(messages=new_messages)
+        return HookResult()
+
+
+
 
