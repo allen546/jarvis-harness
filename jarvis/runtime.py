@@ -45,13 +45,39 @@ class AgentSession:
     async def submit(self, message: Message) -> AsyncIterator[AgentEvent]:
         async with self._lock:
             token = current_context.set(self.ctx)
-            try:
-                async for event in self.kernel.run_turn(self.ctx, message):  # type: ignore[attr-defined]
+            event_queue: asyncio.Queue[AgentEvent | None] = asyncio.Queue()
+            
+            old_emitter = self.ctx.emit_event
+            def queue_emitter(ev: AgentEvent) -> None:
+                event_queue.put_nowait(ev)
+                if old_emitter:
+                    old_emitter(ev)
+            self.ctx.emit_event = queue_emitter
+
+            async def run() -> None:
+                try:
+                    async for event in self.kernel.run_turn(self.ctx, message):  # type: ignore[attr-defined]
+                        if self.ctx.emit_event is not None:
+                            self.ctx.emit_event(event)
+                except Exception as exc:
+                    from jarvis.events import ErrorEvent
+                    err_event = ErrorEvent(session_id=self.ctx.session.id, message=str(exc))
                     if self.ctx.emit_event is not None:
-                        self.ctx.emit_event(event)
-                    yield event
+                        self.ctx.emit_event(err_event)
+                finally:
+                    event_queue.put_nowait(None)
+
+            task = asyncio.create_task(run())
+            try:
+                while True:
+                     event = await event_queue.get()
+                     if event is None:
+                         break
+                     yield event
             finally:
-                current_context.reset(token)
+                 self.ctx.emit_event = old_emitter
+                 current_context.reset(token)
+                 await task
 
 
 def context_from_config(config: SessionConfig, tools: ToolRegistry, hooks: list[TurnHook] | None = None) -> AgentContext:

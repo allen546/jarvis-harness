@@ -9,8 +9,6 @@ from jarvis.models.base import Message
 from jarvis.runtime import AgentContext, AgentSession, RuntimeConfig, SessionState
 from jarvis.tools import ToolRegistry
 
-active_subagents: dict[str, AgentSession] = {}
-
 
 async def spawn_subagent_tool(ctx: AgentContext, args: dict[str, Any]) -> dict[str, Any]:
     task_name = args.get("task_name", "")
@@ -20,10 +18,16 @@ async def spawn_subagent_tool(ctx: AgentContext, args: dict[str, Any]) -> dict[s
     else:
         prompt_str = str(prompt_val or "")
 
+    if not prompt_str.strip():
+        raise ValueError("Prompt cannot be empty or whitespace-only.")
+
     sub_session_id = f"sub_{uuid.uuid4()}"
     
-    # Optional system override
-    system_prompt = args.get("system_override") if "system_override" in args else ctx.config.system_prompt
+    # Optional system override or default task prompt
+    if "system_override" in args and args["system_override"] is not None:
+        system_prompt = args["system_override"]
+    else:
+        system_prompt = f"You are a subagent assistant focusing on task: {task_name}. Help solve this specific subtask concisely."
     sub_config = RuntimeConfig(system_prompt=system_prompt)
     
     # Filter out subagent tools
@@ -45,7 +49,10 @@ async def spawn_subagent_tool(ctx: AgentContext, args: dict[str, Any]) -> dict[s
     )
     
     sub_session = AgentSession(ctx=sub_ctx, kernel=AgentKernel())
-    active_subagents[sub_session_id] = sub_session
+    
+    if "subagent_sessions" not in ctx.session.metadata:
+        ctx.session.metadata["subagent_sessions"] = {}
+    ctx.session.metadata["subagent_sessions"][sub_session_id] = sub_session
     
     if "active_subagents" not in ctx.session.metadata:
         ctx.session.metadata["active_subagents"] = []
@@ -62,15 +69,18 @@ async def spawn_subagent_tool(ctx: AgentContext, args: dict[str, Any]) -> dict[s
 
 async def send_subagent_message_tool(ctx: AgentContext, args: dict[str, Any]) -> dict[str, Any]:
     sub_session_id = args.get("sub_session_id", "")
-    sub_session = active_subagents.get(sub_session_id)
+    sub_session = ctx.session.metadata.get("subagent_sessions", {}).get(sub_session_id)
     if not sub_session:
-        raise ValueError(f"No active subagent found with ID: {sub_session_id}")
+        raise ValueError(f"No active subagent found with ID: {sub_session_id} in this session.")
         
     message_text = args.get("message") or args.get("prompt") or args.get("prompts")
     if isinstance(message_text, list):
         message_str = "\n".join(message_text)
     else:
         message_str = str(message_text or "")
+        
+    if not message_str.strip():
+        raise ValueError("Message cannot be empty or whitespace-only.")
         
     msg = Message(role="user", content=message_str)
     response_text = ""
@@ -83,8 +93,9 @@ async def send_subagent_message_tool(ctx: AgentContext, args: dict[str, Any]) ->
 
 async def close_subagent_tool(ctx: AgentContext, args: dict[str, Any]) -> dict[str, Any]:
     sub_session_id = args.get("sub_session_id", "")
-    if sub_session_id in active_subagents:
-        del active_subagents[sub_session_id]
+    sessions = ctx.session.metadata.get("subagent_sessions", {})
+    if sub_session_id in sessions:
+        del sessions[sub_session_id]
         
     active_list = ctx.session.metadata.get("active_subagents", [])
     if sub_session_id in active_list:

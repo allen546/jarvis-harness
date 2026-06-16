@@ -46,3 +46,64 @@ async def test_collaborative_subagents():
     # 3. Test Close Subagent
     close_resp = await close_subagent_tool(parent_ctx, {"sub_session_id": sub_id})
     assert "closed" in close_resp["message"]
+
+
+@pytest.mark.asyncio
+async def test_subagent_boundary_isolation():
+    # Create two isolated parent contexts
+    ctx_a = AgentContext(
+        config=RuntimeConfig(),
+        session=SessionState(id="session_a"),
+        model=FakeModel(),
+        tools=ToolRegistry(),
+        hooks=[]
+    )
+    ctx_b = AgentContext(
+        config=RuntimeConfig(),
+        session=SessionState(id="session_b"),
+        model=FakeModel(),
+        tools=ToolRegistry(),
+        hooks=[]
+    )
+
+    # Spawn subagent in Session A
+    resp_a = await spawn_subagent_tool(ctx_a, {"prompt": "task a", "task_name": "taskA"})
+    sub_id = resp_a["sub_session_id"]
+
+    # Try to send a message to subagent using Session B's context - should fail with ValueError
+    with pytest.raises(ValueError, match="No active subagent found with ID"):
+        await send_subagent_message_tool(ctx_b, {"sub_session_id": sub_id, "message": "hello"})
+
+    # Try to close subagent using Session B's context - should not remove it from Session A's active subagents
+    await close_subagent_tool(ctx_b, {"sub_session_id": sub_id})
+    # Verification: it is still present in Session A's sessions
+    assert sub_id in ctx_a.session.metadata.get("subagent_sessions", {})
+
+
+@pytest.mark.asyncio
+async def test_subagent_empty_input_validation():
+    ctx = AgentContext(
+        config=RuntimeConfig(),
+        session=SessionState(id="parent_sess"),
+        model=FakeModel(),
+        tools=ToolRegistry(),
+        hooks=[]
+    )
+
+    # Empty prompt spawn
+    with pytest.raises(ValueError, match="cannot be empty or whitespace-only"):
+        await spawn_subagent_tool(ctx, {"prompt": "", "task_name": "task1"})
+
+    with pytest.raises(ValueError, match="cannot be empty or whitespace-only"):
+        await spawn_subagent_tool(ctx, {"prompt": "   ", "task_name": "task1"})
+
+    # First spawn a valid subagent
+    resp = await spawn_subagent_tool(ctx, {"prompt": "valid prompt", "task_name": "task1"})
+    sub_id = resp["sub_session_id"]
+
+    # Empty message send
+    with pytest.raises(ValueError, match="cannot be empty or whitespace-only"):
+        await send_subagent_message_tool(ctx, {"sub_session_id": sub_id, "message": ""})
+
+    with pytest.raises(ValueError, match="cannot be empty or whitespace-only"):
+        await send_subagent_message_tool(ctx, {"sub_session_id": sub_id, "message": "   "})
