@@ -51,7 +51,7 @@ class ToolRegistry:
             return ToolResult(call_id=call.call_id, tool_name=call.tool_name, content=f"Unknown tool: {call.tool_name}", is_error=True)
         try:
             value = tool.handler(call.arguments)
-            if hasattr(value, "__await__"):
+            if not isinstance(value, str):
                 value = await value
             return ToolResult(call_id=call.call_id, tool_name=call.tool_name, content=str(value), is_error=False)
         except Exception as exc:

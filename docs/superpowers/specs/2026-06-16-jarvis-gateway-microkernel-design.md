@@ -182,7 +182,7 @@ Built-in tools:
 - `list_files`
 - `read_file`
 - `search_text`
-- `run_command`, disabled unless config allows it
+- `run_command`, provided but a `before_tool` hook will disable it
 
 Retained tool sources:
 

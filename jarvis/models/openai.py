@@ -1,7 +1,12 @@
 import importlib
-from typing import Any, AsyncGenerator, Optional
-from jarvis.models.base import BaseModelClient, Message, ModelResponse, ToolCall
+import os
+from typing import TYPE_CHECKING, Any, AsyncGenerator, Optional
+from jarvis.models.base import BaseModelClient, Message, ModelResponse, ToolCall, register_model
 
+if TYPE_CHECKING:
+    from jarvis.config import SessionConfig
+
+@register_model("openai")
 class OpenAIClient(BaseModelClient):
     def __init__(
         self,
@@ -10,7 +15,7 @@ class OpenAIClient(BaseModelClient):
         base_url: Optional[str] = None,
         max_tokens: Optional[int] = None,
         temperature: float = 0.7
-    ):
+    ) -> None:
         self.api_key = api_key
         self.model_name = model_name
         self.base_url = base_url
@@ -18,10 +23,22 @@ class OpenAIClient(BaseModelClient):
         self.temperature = temperature
         self._client = None
 
-    async def _get_client(self):
+    @classmethod
+    def from_cfg(cls, cfg: SessionConfig) -> OpenAIClient:
+        extra = cfg.model.extra_params or {}
+        api_key = extra.get("api_key") or os.getenv(f"{cfg.model.provider.upper()}_API_KEY", "mock-key")
+        return cls(
+            api_key=api_key,
+            model_name=cfg.model.model_name,
+            base_url=extra.get("base_url"),
+            max_tokens=cfg.model.max_tokens,
+            temperature=cfg.model.temperature,
+        )
+
+    async def _get_client(self) -> Any:
         if self._client is None:
             openai = importlib.import_module("openai")
-            kwargs = {"api_key": self.api_key}
+            kwargs: dict[str, Any] = {"api_key": self.api_key}
             if self.base_url:
                 kwargs["base_url"] = self.base_url
             self._client = openai.AsyncOpenAI(**kwargs)
@@ -29,8 +46,8 @@ class OpenAIClient(BaseModelClient):
 
     async def generate(self, messages: list[Message], tools: list[Any]) -> ModelResponse:
         client = await self._get_client()
-        openai_msgs = [{"role": m.role, "content": m.content} for m in messages]
-        kwargs = {
+        openai_msgs: list[dict[str, Any]] = [{"role": m.role, "content": m.content} for m in messages]
+        kwargs: dict[str, Any] = {
             "model": self.model_name,
             "messages": openai_msgs,
             "temperature": self.temperature
@@ -42,7 +59,7 @@ class OpenAIClient(BaseModelClient):
 
         response = await client.chat.completions.create(**kwargs)
         choice = response.choices[0]
-        tool_calls = []
+        tool_calls: list[ToolCall] = []
         if choice.message.tool_calls:
             import json
             tool_calls = [ToolCall(call_id=tc.id, tool_name=tc.function.name, arguments=json.loads(tc.function.arguments)) for tc in choice.message.tool_calls]
@@ -50,8 +67,8 @@ class OpenAIClient(BaseModelClient):
 
     async def generate_stream(self, messages: list[Message], tools: list[Any]) -> AsyncGenerator[ModelResponse, None]:
         client = await self._get_client()
-        openai_msgs = [{"role": m.role, "content": m.content} for m in messages]
-        kwargs = {
+        openai_msgs: list[dict[str, Any]] = [{"role": m.role, "content": m.content} for m in messages]
+        kwargs: dict[str, Any] = {
             "model": self.model_name,
             "messages": openai_msgs,
             "temperature": self.temperature,

@@ -1,22 +1,26 @@
-import sys
-from jarvis.channels.base import BaseChannel
+import asyncio
 from jarvis.models.base import Message
 
-class CLIChannel(BaseChannel):
-    _last_active_session = None
 
-    async def send_stream_chunk(self, session_id: str, chunk: str):
-        if session_id != CLIChannel._last_active_session:
-            if CLIChannel._last_active_session is not None:
-                sys.stdout.write("\n")
-            sys.stdout.write(f"[{session_id}] ")
-            CLIChannel._last_active_session = session_id
-        sys.stdout.write(chunk)
-        sys.stdout.flush()
+class CLIReceiver:
+    def __init__(self):
+        self._queue: asyncio.Queue[Message] = asyncio.Queue()
 
-    async def send_message(self, session_id: str, message: Message):
-        if message.content.startswith("Error:"):
-            sys.stdout.write(f"\n{message.content}")
-        else:
-            sys.stdout.write("\n")
-        sys.stdout.flush()
+    async def start(self):
+        loop = asyncio.get_event_loop()
+        while True:
+            line = await loop.run_in_executor(None, input, "> ")
+            if line.lower() in ("quit", "exit"):
+                break
+            await self._queue.put(Message(role="user", content=line))
+
+    async def get(self) -> Message | None:
+        try:
+            return await asyncio.wait_for(self._queue.get(), timeout=0.1)
+        except asyncio.TimeoutError:
+            return None
+
+
+class CLISender:
+    async def send(self, content: str) -> None:
+        print(content)

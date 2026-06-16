@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, AsyncGenerator
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
@@ -56,7 +56,7 @@ async def execute_session_turn(session_id: str, request: TurnRequest) -> Streami
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Failed to create session: {exc}") from exc
 
-    async def stream() -> object:
+    async def stream() -> AsyncGenerator[str, None]:
         async for event in session.submit(Message(role="user", content=request.content, metadata={"channel": request.channel})):
             yield sse_line(event_to_dict(event))
 

@@ -1,0 +1,7 @@
+{
+  "include": ["jarvis", "main.py", "tests"],
+  "typeCheckingMode": "basic",
+  "pythonVersion": "3.14",
+  "venvPath": ".",
+  "venv": ".venv"
+}

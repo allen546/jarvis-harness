@@ -1,19 +1,20 @@
 import pytest
+from typing import Any
 
 from jarvis.events import ErrorEvent, MessageEvent, NativeActionEvent, ToolCallEvent, ToolResultEvent
-from jarvis.hooks import HookResult, NoopTurnHook
+from jarvis.hooks import HookResult, NoopTurnHook, TurnHook
 from jarvis.kernel import AgentKernel
-from jarvis.models.base import Message, ModelResponse, NativeAction, ToolCall
+from jarvis.models.base import BaseModelClient, Message, ModelResponse, NativeAction, ToolCall
 from jarvis.runtime import AgentContext, RuntimeConfig, SessionState
 from jarvis.tools import Tool, ToolRegistry, ToolResult
 
 
-class SequenceModel:
+class SequenceModel(BaseModelClient):
     def __init__(self, responses: list[ModelResponse]) -> None:
         self.responses = responses
         self.calls: list[list[Message]] = []
 
-    async def generate(self, messages: list[Message], tools: list[object]) -> ModelResponse:
+    async def generate(self, messages: list[Message], tools: list[Any]) -> ModelResponse:
         self.calls.append(list(messages))
         return self.responses.pop(0)
 
@@ -22,7 +23,7 @@ async def echo(args: dict[str, object]) -> str:
     return str(args["value"])
 
 
-def ctx(model: SequenceModel, hooks: list[object] | None = None) -> AgentContext:
+def ctx(model: BaseModelClient, hooks: list[TurnHook] | None = None) -> AgentContext:
     return AgentContext(
         config=RuntimeConfig(system_prompt="system"),
         session=SessionState(id="s1"),

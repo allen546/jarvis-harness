@@ -2,18 +2,19 @@ import asyncio
 
 import pytest
 
+from typing import Any
 from jarvis.events import MessageEvent
 from jarvis.hooks import HookResult, NoopTurnHook
-from jarvis.models.base import Message, ModelResponse
+from jarvis.models.base import BaseModelClient, Message, ModelResponse
 from jarvis.runtime import AgentContext, AgentSession, RuntimeConfig, SessionState
 from jarvis.tools import ToolRegistry
 
 
-class SlowModel:
+class SlowModel(BaseModelClient):
     def __init__(self) -> None:
         self.calls: list[str] = []
 
-    async def generate(self, messages: list[Message], tools: list[object]) -> ModelResponse:
+    async def generate(self, messages: list[Message], tools: list[Any]) -> ModelResponse:
         self.calls.append(messages[-1].content)
         await asyncio.sleep(0.01)
         return ModelResponse(content=f"reply:{messages[-1].content}")
