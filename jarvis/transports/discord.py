@@ -3,7 +3,18 @@ from __future__ import annotations
 import typing
 from jarvis.models.base import NativeAction
 
+def _to_snowflake(val: typing.Any) -> int:
+    if isinstance(val, int):
+        return val
+    try:
+        return int(val)
+    except (TypeError, ValueError) as e:
+        raise ValueError(f"Invalid Discord snowflake ID: {val}") from e
+
+
 class MockDiscordAPI:
+    __slots__ = ("sent_messages", "reactions", "embeds", "threads")
+
     def __init__(self) -> None:
         self.sent_messages: list[tuple[str, str, str | None]] = []
         self.reactions: list[tuple[str, str, str, str]] = []
@@ -24,10 +35,15 @@ class MockDiscordAPI:
 
 
 class DiscordTransport:
+    __slots__ = ("client",)
+
     def __init__(self, client: typing.Any = None) -> None:
         self.client = client or MockDiscordAPI()
 
     async def execute_native_action(self, channel_id: str, action: NativeAction) -> None:
+        if not action.action_type.startswith("discord_"):
+            return
+
         if isinstance(self.client, MockDiscordAPI) or hasattr(self.client, "sent_messages"):
             # Mock implementation
             if action.action_type == "discord_reply":
@@ -48,33 +64,26 @@ class DiscordTransport:
         else:
             # Real implementation (lazy import discord)
             import discord
-            # Get channel (handles both integer IDs for discord.py and string/channel retrieval)
-            try:
-                channel_int = int(channel_id)
-                channel = self.client.get_channel(channel_int)
-                if channel is None:
-                    channel = await self.client.fetch_channel(channel_int)
-            except ValueError:
-                channel = self.client.get_channel(channel_id)
-                if channel is None:
-                    channel = await self.client.fetch_channel(channel_id)
+            
+            # Enforce snowflake conversion for channel_id
+            channel_snowflake = _to_snowflake(channel_id)
+            channel = self.client.get_channel(channel_snowflake)
+            if channel is None:
+                channel = await self.client.fetch_channel(channel_snowflake)
 
             if action.action_type == "discord_reply":
                 msg_id = action.params["message_id"]
                 content = action.params["content"]
-                try:
-                    ref = discord.MessageReference(message_id=int(msg_id), channel_id=channel.id)
-                except ValueError:
-                    ref = discord.MessageReference(message_id=msg_id, channel_id=channel.id)
+                ref = discord.MessageReference(
+                    message_id=_to_snowflake(msg_id),
+                    channel_id=channel.id
+                )
                 await channel.send(content, reference=ref)
             elif action.action_type == "discord_reaction":
                 msg_id = action.params["message_id"]
                 emoji = action.params["emoji"]
                 action_name = action.params.get("action", "add")
-                try:
-                    message = await channel.fetch_message(int(msg_id))
-                except ValueError:
-                    message = await channel.fetch_message(msg_id)
+                message = await channel.fetch_message(_to_snowflake(msg_id))
                 if action_name == "add":
                     await message.add_reaction(emoji)
                 elif action_name == "remove":
@@ -86,10 +95,7 @@ class DiscordTransport:
                 name = action.params["name"]
                 msg_id = action.params.get("message_id")
                 if msg_id:
-                    try:
-                        message = await channel.fetch_message(int(msg_id))
-                    except ValueError:
-                        message = await channel.fetch_message(msg_id)
+                    message = await channel.fetch_message(_to_snowflake(msg_id))
                     await message.create_thread(name=name)
                 else:
                     await channel.create_thread(name=name)

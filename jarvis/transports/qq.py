@@ -4,6 +4,8 @@ import typing
 from jarvis.models.base import NativeAction
 
 class MockQQAPI:
+    __slots__ = ("replies", "markdowns", "keyboards")
+
     def __init__(self) -> None:
         self.replies: list[tuple[str, str, str]] = []
         self.markdowns: list[tuple[str, str, str | None]] = []
@@ -20,10 +22,15 @@ class MockQQAPI:
 
 
 class QQTransport:
+    __slots__ = ("client",)
+
     def __init__(self, client: typing.Any = None) -> None:
         self.client = client or MockQQAPI()
 
     async def execute_native_action(self, target_id: str, action: NativeAction) -> None:
+        if not action.action_type.startswith("qq_"):
+            return
+
         if isinstance(self.client, MockQQAPI) or hasattr(self.client, "replies"):
             # Mock implementation
             if action.action_type == "qq_reply":
@@ -37,15 +44,14 @@ class QQTransport:
             elif action.action_type == "qq_send_keyboard":
                 await self.client.send_keyboard(target_id, action.params)
         else:
-            # Real implementation using botpy
-            # botpy uses post_message or direct message
+            # Real implementation using botpy (DM-only transport)
             import botpy
             
             if action.action_type == "qq_reply":
                 msg_id = action.params["message_id"]
                 content = action.params["content"]
-                await self.client.api.post_message(
-                    channel_id=target_id,
+                await self.client.api.post_dms_message(
+                    guild_id=target_id,
                     content=content,
                     msg_id=msg_id
                 )
@@ -55,12 +61,12 @@ class QQTransport:
                 markdown_params = {"content": content}
                 if template_id:
                     markdown_params["template_id"] = template_id
-                await self.client.api.post_message(
-                    channel_id=target_id,
+                await self.client.api.post_dms_message(
+                    guild_id=target_id,
                     markdown=markdown_params
                 )
             elif action.action_type == "qq_send_keyboard":
-                await self.client.api.post_message(
-                    channel_id=target_id,
+                await self.client.api.post_dms_message(
+                    guild_id=target_id,
                     keyboard=action.params
                 )
