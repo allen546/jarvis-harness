@@ -102,9 +102,19 @@ def builtin_tools(root: Path | str = ".") -> list[Tool]:
         return output.decode("utf-8", errors="replace")
 
     object_params = {"type": "object", "properties": {}, "additionalProperties": True}
+    from jarvis.memory_store import search_semantic_memory_tool
+    search_params = {
+        "type": "object",
+        "properties": {
+            "query": {"type": "string", "description": "The search query."},
+            "tag": {"type": "string", "description": "Optional tag filter (e.g. 'truths', 'history')."}
+        },
+        "required": ["query"]
+    }
     return [
         Tool("list_files", "List files under a workspace path.", object_params, list_files),
         Tool("read_file", "Read a UTF-8 text file under the workspace.", object_params, read_file),
         Tool("search_text", "Search for text under the workspace.", object_params, search_text),
         Tool("run_command", "Run a shell command. Policy hooks decide whether it is allowed.", object_params, run_command),
+        Tool("search_semantic_memory", "Search semantic memory for previously stored facts and history.", search_params, search_semantic_memory_tool),
     ]

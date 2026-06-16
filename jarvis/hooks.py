@@ -141,5 +141,14 @@ class ContextCompressionHook(NoopTurnHook):
         return HookResult()
 
 
+def __getattr__(name: str):
+    if name == "SemanticMemoryHook":
+        from jarvis.memory_store import SemanticMemoryHook
+        return SemanticMemoryHook
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+
+
 
 
