@@ -33,6 +33,9 @@ async def test_purge_semantic_memory(tmp_path: Path):
         {"id": "id3", "text": "Apple is good.", "embedding": [0.1], "tags": ["truths"]}
     ])
     from jarvis.memory_store import SemanticMemoryHook
+    from jarvis.models.base import BaseModelClient
+    class DummyModel(BaseModelClient):
+        pass
     hook = SemanticMemoryHook(
         storage_dir=str(tmp_path),
         embedding_url="http://test/embeddings"
@@ -40,7 +43,7 @@ async def test_purge_semantic_memory(tmp_path: Path):
     ctx = AgentContext(
         config=RuntimeConfig(),
         session=SessionState(id=session_id),
-        model=None,
+        model=DummyModel(),
         tools=ToolRegistry(),
         hooks=[hook]
     )

@@ -134,7 +134,8 @@ class SemanticMemoryStore:
                         new_memories.append(m)
                 memories = new_memories
             purged = original_len - len(memories)
-            self._save(session_id, memories)
+            if purged > 0:
+                self._save(session_id, memories)
             return purged
 
 
@@ -220,19 +221,11 @@ class SemanticMemoryHook(NoopTurnHook):
         return HookResult()
 
 
-async def search_semantic_memory_tool(args: dict[str, Any]) -> str:
-    query = args["query"]
-    tag = args.get("tag")
-
-    ctx = get_context()
-    session_id = ctx.session.id if ctx and hasattr(ctx, "session") else "default"
-
-    # Default settings
+def _get_store_from_context(ctx: Any) -> SemanticMemoryStore:
     storage_dir = "storage"
     embedding_url = os.environ.get("EMBEDDING_URL", "http://localhost:8000/embeddings")
     http_client = None
 
-    # Retrieve matching hook settings if present
     if ctx and hasattr(ctx, "hooks"):
         for hook in ctx.hooks:
             if type(hook).__name__ == "SemanticMemoryHook":
@@ -241,11 +234,20 @@ async def search_semantic_memory_tool(args: dict[str, Any]) -> str:
                 http_client = getattr(hook, "http_client", http_client)
                 break
 
-    store = SemanticMemoryStore(
+    return SemanticMemoryStore(
         storage_dir=storage_dir,
         embedding_url=embedding_url,
         http_client=http_client,
     )
+
+
+async def search_semantic_memory_tool(args: dict[str, Any]) -> str:
+    query = args["query"]
+    tag = args.get("tag")
+
+    ctx = get_context()
+    session_id = ctx.session.id if ctx and hasattr(ctx, "session") else "default"
+    store = _get_store_from_context(ctx)
     results = await store.search(session_id, query, tag=tag)
     return json.dumps(results)
 
@@ -256,25 +258,6 @@ async def purge_semantic_memory_tool(args: dict[str, Any]) -> str:
 
     ctx = get_context()
     session_id = ctx.session.id if ctx and hasattr(ctx, "session") else "default"
-
-    # Default settings
-    storage_dir = "storage"
-    embedding_url = os.environ.get("EMBEDDING_URL", "http://localhost:8000/embeddings")
-    http_client = None
-
-    # Retrieve matching hook settings if present
-    if ctx and hasattr(ctx, "hooks"):
-        for hook in ctx.hooks:
-            if type(hook).__name__ == "SemanticMemoryHook":
-                storage_dir = getattr(hook, "storage_dir", storage_dir)
-                embedding_url = getattr(hook, "embedding_url", embedding_url)
-                http_client = getattr(hook, "http_client", http_client)
-                break
-
-    store = SemanticMemoryStore(
-        storage_dir=storage_dir,
-        embedding_url=embedding_url,
-        http_client=http_client,
-    )
+    store = _get_store_from_context(ctx)
     count = await store.purge(session_id, ids=ids, tag=tag)
     return f"Purged {count} items from semantic memory."
