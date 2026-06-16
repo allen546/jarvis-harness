@@ -21,7 +21,7 @@ class SlowModel(BaseModelClient):
 
 
 class StopHook(NoopTurnHook):
-    async def before_model(self, ctx: AgentContext, messages: list[Message]) -> HookResult:
+    async def before_model(self, ctx: object, messages: list[Message]) -> HookResult:
         return HookResult(stop=True, reason="stopped")
 
 
@@ -64,7 +64,7 @@ def test_hook_result_defaults() -> None:
 class DummyModel(BaseModelClient):
     @classmethod
     def from_cfg(cls, cfg): return cls()
-    async def generate(self, messages, tools): return None
+    async def generate(self, messages, tools): return ModelResponse()
 
 
 def test_session_state_metadata_and_context_emit_event():

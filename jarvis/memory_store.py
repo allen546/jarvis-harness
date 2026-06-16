@@ -148,14 +148,16 @@ class SemanticMemoryHook(NoopTurnHook):
         self.http_client = http_client
 
     async def before_model(self, ctx: object, messages: list[Message]) -> HookResult:
-        from jarvis.runtime import current_context
-        current_context.set(ctx)
+        from jarvis.runtime import AgentContext, current_context
+        if isinstance(ctx, AgentContext):
+            current_context.set(ctx)
         return HookResult()
 
     async def after_turn(self, ctx: object, message: Message) -> HookResult:
         try:
-            from jarvis.runtime import current_context
-            current_context.set(ctx)
+            from jarvis.runtime import AgentContext, current_context
+            if isinstance(ctx, AgentContext):
+                current_context.set(ctx)
             
             session = getattr(ctx, "session", None)
             if not session or not session.history:

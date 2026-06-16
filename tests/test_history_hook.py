@@ -8,12 +8,16 @@ from jarvis.runtime import AgentContext, RuntimeConfig, SessionState
 from jarvis.tools import Tool, ToolRegistry
 from jarvis.kernel import AgentKernel
 
+class DummyModel(BaseModelClient):
+    async def generate(self, messages: list[Message], tools: list[Any]) -> ModelResponse:
+        return ModelResponse()
+
 @pytest.mark.asyncio
 async def test_jsonl_history_hook(tmp_path: Path):
     storage_dir = tmp_path / "storage"
     hook = JSONLHistoryHook(storage_dir=str(storage_dir))
     state = SessionState(id="sess1")
-    ctx = AgentContext(config=RuntimeConfig(), session=state, model=None, tools=ToolRegistry(), hooks=[])
+    ctx = AgentContext(config=RuntimeConfig(), session=state, model=DummyModel(), tools=ToolRegistry(), hooks=[])
     
     # 1. Test before_model loads empty history
     await hook.before_model(ctx, [])
@@ -35,7 +39,7 @@ async def test_jsonl_history_hook(tmp_path: Path):
 
     # 3. Test before_model loads from file
     new_state = SessionState(id="sess1")
-    new_ctx = AgentContext(config=RuntimeConfig(), session=new_state, model=None, tools=ToolRegistry(), hooks=[])
+    new_ctx = AgentContext(config=RuntimeConfig(), session=new_state, model=DummyModel(), tools=ToolRegistry(), hooks=[])
     await hook.before_model(new_ctx, [])
     assert len(new_state.history) == 2
     assert new_state.history[0].content == "hello"
