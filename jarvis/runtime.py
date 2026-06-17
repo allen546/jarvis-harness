@@ -54,6 +54,12 @@ class AgentSession:
     async def submit(self, message: Message) -> AsyncIterator[AgentEvent]:
         async with self._lock:
             if not self._mcp_initialized:
+                from jarvis.skills import SkillManager, SkillInstructionsHook
+                skill_mgr = SkillManager()
+                skills = await skill_mgr.load_allowed_skills(self.ctx)
+                if skills:
+                    self.ctx.hooks.append(SkillInstructionsHook(skills))
+
                 from jarvis.mcp import McpClientManager
                 manager = McpClientManager()
                 mcp_tools = await manager.initialize()
