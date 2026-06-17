@@ -39,6 +39,8 @@ class AgentContext:
     tools: ToolRegistry
     hooks: list[TurnHook] = field(default_factory=list)
     emit_event: Callable[[AgentEvent], None] | None = None
+    mcp_manager: Any | None = field(default=None, compare=False)
+    approval_handler: Any | None = field(default=None, compare=False)
 
 
 class AgentSession:

@@ -54,3 +54,18 @@ async def test_tool_approval_hook() -> None:
     ctx.approval_handler = lambda tc: True
     res_accept = await hook.before_tool(ctx, call)
     assert res_accept.skip_tool is False
+
+
+@pytest.mark.asyncio
+async def test_tool_approval_hook_async() -> None:
+    hook = ToolApprovalHook()
+    ctx = MockContext(require_approval=True)
+    call = ToolCall(call_id="c1", tool_name="Bash", arguments={"command": "rm -rf"})
+    
+    # Async approval handler
+    async def async_handler(tc):
+        return True
+        
+    ctx.approval_handler = async_handler
+    res = await hook.before_tool(ctx, call)
+    assert res.skip_tool is False
