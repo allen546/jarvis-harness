@@ -119,6 +119,9 @@ A new module wrapping the `mcp` library client features.
 *   **Model Compatibility**:
     *   Implement/update `generate_stream` in `OpenAIClient` and `AnthropicClient`.
     *   Correctly parse streamed tool call arguments/IDs as they arrive in chunks and merge them into complete `ToolCall` structures.
+*   **Gateway / Transports**:
+    *   CLI: Renders text deltas token-by-token.
+    *   Gateway: Remains a blocking HTTP JSON endpoint, consuming all events internally from `submit()` to compile the final JSON `TurnResponse`.
 
 ### 3.5 Error Recovery (Model Clients)
 
@@ -140,3 +143,4 @@ A new module wrapping the `mcp` library client features.
 *   Start an interactive session using the CLI (`python run.py`) with `require_tool_approval` enabled to confirm stdin/stdout confirmation prompts work.
 *   Configure a local stdio MCP server (e.g. standard file server) and run a turn verifying it executes correctly.
 *   Add a custom skill folder under `skills/` and verify the agent utilizes its instructions and scripts.
+
