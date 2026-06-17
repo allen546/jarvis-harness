@@ -16,7 +16,13 @@ def render_cli_event(event: object) -> None:
         print(f"\n[tool_call] {event.tool_call.tool_name} {event.tool_call.arguments}")
     elif isinstance(event, ToolResultEvent):
         prefix = "[tool_error]" if event.is_error else "[tool_result]"
-        print(f"\n{prefix} {event.tool_name}: {event.content}")
+        lines = event.content.splitlines()
+        if len(lines) > 5:
+            shown = "\n".join(lines[:5])
+            remaining = len(lines) - 5
+            print(f"\n{prefix} {event.tool_name}: {shown}\n  … ({remaining} more lines)")
+        else:
+            print(f"\n{prefix} {event.tool_name}: {event.content}")
     elif isinstance(event, NativeActionEvent):
         print(f"[native_action {event.action.action_type}] {event.action.params}")
     elif isinstance(event, ErrorEvent):
@@ -24,9 +30,16 @@ def render_cli_event(event: object) -> None:
 
 
 async def run_cli(session: AgentSession) -> None:
-    while True:
-        line = await asyncio.to_thread(input, "> ")
-        if line.lower() in {"exit", "quit"}:
-            return
-        async for event in session.submit(Message(role="user", content=line)):
-            render_cli_event(event)
+    try:
+        while True:
+            try:
+                line = await asyncio.to_thread(input, "> ")
+            except (KeyboardInterrupt, EOFError):
+                print()
+                return
+            if line.lower() in {"exit", "quit"}:
+                return
+            async for event in session.submit(Message(role="user", content=line)):
+                render_cli_event(event)
+    except asyncio.CancelledError:
+        pass

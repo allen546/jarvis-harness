@@ -263,3 +263,13 @@ async def purge_semantic_memory_tool(args: dict[str, Any]) -> str:
     store = _get_store_from_context(ctx)
     count = await store.purge(session_id, ids=ids, tag=tag)
     return f"Purged {count} items from semantic memory."
+
+async def store_semantic_memory_tool(args: dict[str, Any]) -> str:
+    text = args["text"]
+    tags = args.get("tags", ["truths"])
+
+    ctx = get_context()
+    session_id = ctx.session.id if ctx and hasattr(ctx, "session") else "default"
+    store = _get_store_from_context(ctx)
+    await store.add_memory(session_id, text, tags)
+    return f"Stored in semantic memory: {text[:80]}"

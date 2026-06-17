@@ -38,7 +38,7 @@ async def test_builtin_read_file_and_search_text(tmp_path: Path) -> None:
     sample = tmp_path / "sample.txt"
     sample.write_text("alpha\nbeta\n", encoding="utf-8")
     registry = ToolRegistry(builtin_tools(root=tmp_path))
-    read = await registry.execute(ToolCall(call_id="1", tool_name="read_file", arguments={"path": "sample.txt"}))
-    search = await registry.execute(ToolCall(call_id="2", tool_name="search_text", arguments={"query": "beta"}))
+    read = await registry.execute(ToolCall(call_id="1", tool_name="read", arguments={"path": "sample.txt"}))
+    search = await registry.execute(ToolCall(call_id="2", tool_name="grep", arguments={"query": "beta"}))
     assert read.content == "alpha\nbeta\n"
     assert "sample.txt:2:beta" in search.content

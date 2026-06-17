@@ -10,23 +10,14 @@ from fastapi.responses import StreamingResponse
 from jarvis.config import SessionConfig, load_session_config
 from jarvis.events import event_to_dict
 from jarvis.kernel import AgentKernel
-from jarvis.models.base import Message, TurnRequest, get_model_class
-from jarvis.runtime import AgentContext, AgentSession, RuntimeConfig, SessionState
+from jarvis.models.base import Message, TurnRequest
+from jarvis.runtime import AgentSession, context_from_config
 from jarvis.tools import ToolRegistry, builtin_tools
-
 app = FastAPI(title="Jarvis Gateway")
 app.state.sessions = {}
 
-
 def build_session(config: SessionConfig) -> AgentSession:
-    model_cls = get_model_class(config.model.provider)
-    ctx = AgentContext(
-        config=RuntimeConfig(system_prompt=config.harness.system_prompt),
-        session=SessionState(id=config.session_id),
-        model=model_cls.from_cfg(config),
-        tools=ToolRegistry(builtin_tools(Path.cwd())),
-        hooks=[],
-    )
+    ctx = context_from_config(config, tools=ToolRegistry(builtin_tools(Path.cwd())))
     return AgentSession(ctx=ctx, kernel=AgentKernel())
 
 

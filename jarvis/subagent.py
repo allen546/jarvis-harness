@@ -33,7 +33,7 @@ async def spawn_subagent_tool(ctx: AgentContext, args: dict[str, Any]) -> dict[s
     # Filter out subagent tools
     filtered_tools = [
         tool for tool in ctx.tools._tools.values()
-        if tool.name not in {"spawn_subagent", "send_subagent_message", "close_subagent"}
+        if tool.name not in {"task", "message", "close"}
     ]
     sub_tools = ToolRegistry(filtered_tools)
     

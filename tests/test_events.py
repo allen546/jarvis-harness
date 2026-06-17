@@ -26,9 +26,9 @@ def test_message_event_serializes_message() -> None:
 
 
 def test_tool_events_serialize() -> None:
-    call = ToolCall(call_id="c1", tool_name="read_file", arguments={"path": "x"})
+    call = ToolCall(call_id="c1", tool_name="read", arguments={"path": "x"})
     call_event = ToolCallEvent(session_id="s1", tool_call=call)
-    result_event = ToolResultEvent(session_id="s1", call_id="c1", tool_name="read_file", content="ok", is_error=False)
+    result_event = ToolResultEvent(session_id="s1", call_id="c1", tool_name="read", content="ok", is_error=False)
     assert event_to_dict(call_event)["tool_call"] == call.model_dump()
     assert event_to_dict(result_event)["content"] == "ok"
     assert event_to_dict(result_event)["is_error"] is False

@@ -1,0 +1,16 @@
+{
+  "model": {
+    "provider": "openai_compatible",
+    "model_name": "mimo-v2.5",
+    "extra_params": {
+      "api_key": "tp-cb4ukjttk7g4jwcombxqxx1ue67qo0rv51qwg178bmjaxd74",
+      "base_url": "https://token-plan-cn.xiaomimimo.com/v1",
+      "thinking": "medium"
+    }
+  },
+  "harness": {
+    "system_prompt": "You are Jarvis, a helpful assistant.",
+    "max_consecutive_tools": 5,
+    "require_tool_approval": false
+  }
+}

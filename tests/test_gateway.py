@@ -20,7 +20,7 @@ class FakeModel:
 async def test_gateway_streams_kernel_events(monkeypatch: pytest.MonkeyPatch) -> None:
     from jarvis.config import ModelConfig, SessionConfig
 
-    monkeypatch.setattr("main.get_model_class", lambda provider: FakeModel)
+    monkeypatch.setattr("jarvis.runtime.get_model_class", lambda provider: FakeModel)
     monkeypatch.setattr("main.load_session_config", lambda session_id: SessionConfig(session_id=session_id, model=ModelConfig(provider="fake", model_name="fake")))
 
     transport = ASGITransport(app=app)

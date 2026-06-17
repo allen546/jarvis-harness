@@ -29,8 +29,6 @@ class AgentKernel:
                     return
 
                 assistant = Message(role="assistant", content=response.content or "")
-                if assistant.content:
-                    yield TextDeltaEvent(session_id=ctx.session.id, content=assistant.content)
                 for action in user_message.native_actions + assistant.native_actions:
                     yield NativeActionEvent(session_id=ctx.session.id, action=action)
 
@@ -45,7 +43,7 @@ class AgentKernel:
                     yield MessageEvent(session_id=ctx.session.id, message=assistant)
                     return
 
-                messages.append(Message(role="assistant", content=assistant.content))
+                messages.append(Message(role="assistant", content=assistant.content, metadata={"tool_calls": [tc.model_dump() for tc in response.tool_calls]}))
                 for tool_call in response.tool_calls:
                     yield ToolCallEvent(session_id=ctx.session.id, tool_call=tool_call)
                     before_tool = await self._run_before_tool(ctx, tool_call)

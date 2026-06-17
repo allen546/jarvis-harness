@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Callable
 
 from jarvis.config import SessionConfig
 from jarvis.events import AgentEvent
-from jarvis.hooks import TurnHook
+from jarvis.hooks import ContextCompressionHook, JSONLHistoryHook, TurnHook
 from jarvis.models.base import BaseModelClient, Message, get_model_class
 from jarvis.tools import ToolRegistry
 
@@ -75,9 +76,31 @@ class AgentSession:
                          break
                      yield event
             finally:
-                 self.ctx.emit_event = old_emitter
-                 current_context.reset(token)
-                 await task
+                self.ctx.emit_event = old_emitter
+                try:
+                    current_context.reset(token)
+                except ValueError:
+                    pass
+                if not task.done():
+                    task.cancel()
+                    try:
+                        await task
+                    except asyncio.CancelledError:
+                        pass
+                else:
+                    await task
+
+
+def _default_hooks() -> list[TurnHook]:
+    hooks: list[TurnHook] = [JSONLHistoryHook(), ContextCompressionHook()]
+    embedding_url = os.environ.get("EMBEDDING_URL", "")
+    if embedding_url:
+        from jarvis.memory_store import SemanticMemoryHook
+        hooks.append(SemanticMemoryHook(
+            storage_dir="storage",
+            embedding_url=embedding_url,
+        ))
+    return hooks
 
 
 def context_from_config(config: SessionConfig, tools: ToolRegistry, hooks: list[TurnHook] | None = None) -> AgentContext:
@@ -88,5 +111,5 @@ def context_from_config(config: SessionConfig, tools: ToolRegistry, hooks: list[
         session=SessionState(id=config.session_id),
         model=model_cls.from_cfg(config),
         tools=tools,
-        hooks=hooks or [],
+        hooks=hooks if hooks is not None else _default_hooks(),
     )

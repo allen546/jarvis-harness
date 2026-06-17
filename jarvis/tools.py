@@ -74,7 +74,12 @@ def builtin_tools(root: Path | str = ".") -> list[Tool]:
         target = _resolve(base, raw_path)
         if target.is_file():
             return target.name
-        return "\n".join(sorted(str(path.relative_to(base.resolve())) for path in target.rglob("*") if path.is_file()))
+        entries = sorted(target.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower()))
+        return "\n".join(
+            (f"{p.name}/" if p.is_dir() else p.name)
+            for p in entries
+            if not p.name.startswith(".")
+        )
 
     def read_file(args: dict[str, Any]) -> str:
         target = _resolve(base, str(args["path"]))
@@ -102,7 +107,7 @@ def builtin_tools(root: Path | str = ".") -> list[Tool]:
         return output.decode("utf-8", errors="replace")
 
     object_params = {"type": "object", "properties": {}, "additionalProperties": True}
-    from jarvis.memory_store import search_semantic_memory_tool, purge_semantic_memory_tool
+    from jarvis.memory_store import search_semantic_memory_tool, purge_semantic_memory_tool, store_semantic_memory_tool
     search_params = {
         "type": "object",
         "properties": {
@@ -121,6 +126,18 @@ def builtin_tools(root: Path | str = ".") -> list[Tool]:
                 "description": "Optional list of memory item IDs to purge."
             }
         }
+    }
+    store_params = {
+        "type": "object",
+        "properties": {
+            "text": {"type": "string", "description": "The fact or information to store."},
+            "tags": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Optional tags for the memory (default: ['truths'])."
+            }
+        },
+        "required": ["text"]
     }
 
     async def spawn_subagent_handler(args: dict[str, Any]) -> str:
@@ -204,13 +221,14 @@ def builtin_tools(root: Path | str = ".") -> list[Tool]:
     }
 
     return [
-        Tool("list_files", "List files under a workspace path.", object_params, list_files),
-        Tool("read_file", "Read a UTF-8 text file under the workspace.", object_params, read_file),
-        Tool("search_text", "Search for text under the workspace.", object_params, search_text),
-        Tool("run_command", "Run a shell command. Policy hooks decide whether it is allowed.", object_params, run_command),
-        Tool("search_semantic_memory", "Search semantic memory for previously stored facts and history.", search_params, search_semantic_memory_tool),
-        Tool("purge_semantic_memory", "Purge specific items or tags from semantic memory.", purge_params, purge_semantic_memory_tool),
-        Tool("spawn_subagent", "Spawn a collaborative subagent to handle a specific task.", spawn_subagent_params, spawn_subagent_handler),
-        Tool("send_subagent_message", "Send a message to an active subagent.", send_subagent_message_params, send_subagent_message_handler),
-        Tool("close_subagent", "Close an active subagent and clean up resources.", close_subagent_params, close_subagent_handler),
+        Tool("ls", "List files under a workspace path.", object_params, list_files),
+        Tool("read", "Read a UTF-8 text file under the workspace.", object_params, read_file),
+        Tool("grep", "Search for text under the workspace.", object_params, search_text),
+        Tool("Bash", "Run a shell command. Policy hooks decide whether it is allowed.", object_params, run_command),
+        Tool("memory_search", "Search semantic memory for previously stored facts and history.", search_params, search_semantic_memory_tool),
+        Tool("memory_purge", "Purge specific items or tags from semantic memory.", purge_params, purge_semantic_memory_tool),
+        Tool("memory_store", "Store a fact or piece of information in semantic memory.", store_params, store_semantic_memory_tool),
+        Tool("task", "Spawn a collaborative subagent to handle a specific task.", spawn_subagent_params, spawn_subagent_handler),
+        Tool("message", "Send a message to an active subagent.", send_subagent_message_params, send_subagent_message_handler),
+        Tool("close", "Close an active subagent and clean up resources.", close_subagent_params, close_subagent_handler),
     ]
