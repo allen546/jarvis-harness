@@ -2,18 +2,20 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Implement the MCP Client, Skill Loader, Tool Approval Hook, Budget Guard Hook, Model Streaming (Text Deltas), and Error Recovery in the Jarvis microkernel.
+**Goal:** Implement the MCP Client, Skill Loader, Tool Approval Hook, Budget Guard Hook, Configurable Model Streaming (Text Deltas with Fallback), and SDK-safe Error Recovery in the Jarvis microkernel.
 
-**Architecture:** We extend the Session Context and Hooks pattern. An `McpClientManager` manages external server connections using the `ClientSessionGroup` class. A `SkillManager` loads directory-based instructions and registers script tools. The approval and budget limits are enforced via `TurnHook` checkpoints. `AgentKernel` is updated to stream responses via `generate_stream()` and accumulate chunk states, while model calls are decorated with an exponential backoff wrapper.
+**Architecture:** We extend the Session Context and Hooks pattern. An `McpClientManager` manages external server connections using the `ClientSessionGroup` class. A `SkillManager` loads directory-based instructions and registers script tools. The approval and budget limits are enforced via `TurnHook` checkpoints. `AgentKernel` is updated to stream responses via `generate_stream()` if enabled and supported, falling back to `generate()` as needed, while model calls are decorated with a dynamic SDK-type-safe exponential backoff wrapper.
 
-**Tech Stack:** Python 3.14+, `mcp` SDK, `anyio`, `httpx`, `pydantic`, `pytest`
+**Tech Stack:** Python 3.14+, `mcp` SDK, `anyio`, `httpx`, `pydantic`, `pytest`, `pyyaml` (added to runtime dependencies)
 
 ---
 
 ### Task 1: Runtime Config and Context Extensions
 
 **Files:**
-- Modify: `jarvis/runtime.py`
+- Modify: `pyproject.toml` (add `pyyaml` to runtime dependencies)
+- Modify: `jarvis/config.py` (add `stream` to `HarnessConfig`)
+- Modify: `jarvis/runtime.py` (extend `RuntimeConfig` and context mapping)
 - Test: `tests/test_config_models.py`
 
 - [ ] **Step 1: Write a failing test for context config extension**
@@ -26,11 +28,13 @@
           system_prompt="test",
           max_consecutive_tools=10,
           require_tool_approval=True,
-          allowed_skills=["git"]
+          allowed_skills=["git"],
+          stream=False
       )
       assert config.max_consecutive_tools == 10
       assert config.require_tool_approval is True
       assert config.allowed_skills == ["git"]
+      assert config.stream is False
   ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -38,19 +42,35 @@
   Run: `PYTHONPATH=. .venv/bin/pytest tests/test_config_models.py -k test_runtime_config_extensions`
   Expected: FAIL (AttributeError / TypeError due to missing slots/arguments)
 
-- [ ] **Step 3: Update `RuntimeConfig` and `context_from_config` in `jarvis/runtime.py`**
+- [ ] **Step 3: Update dependencies in `pyproject.toml`**
+  
+  Add `"pyyaml>=6.0.3"` to `dependencies` array under `[project]` (line 7-12) so it is available at runtime.
+
+- [ ] **Step 4: Update `HarnessConfig` in `jarvis/config.py`**
+  
+  Add `stream: bool = True` to `HarnessConfig` (line 13-18):
+  ```python
+  class HarnessConfig(BaseModel):
+      system_prompt: Optional[str] = None
+      max_consecutive_tools: int = 5
+      require_tool_approval: bool = False
+      allowed_skills: list[str] = Field(default_factory=list)
+      stream: bool = True
+  ```
+
+- [ ] **Step 5: Update `RuntimeConfig` and `context_from_config` in `jarvis/runtime.py`**
   
   Modify `jarvis/runtime.py`:
   ```python
-  # Target line 19-21:
   @dataclass(slots=True)
   class RuntimeConfig:
       system_prompt: str | None = None
       max_consecutive_tools: int = 5
       require_tool_approval: bool = False
       allowed_skills: list[str] = field(default_factory=list)
+      stream: bool = True
   ```
-  And in `context_from_config` (line 106-115), pass these fields:
+  And in `context_from_config`, pass these fields:
   ```python
   def context_from_config(config: SessionConfig, tools: ToolRegistry, hooks: list[TurnHook] | None = None) -> AgentContext:
       provider = config.model.provider.lower()
@@ -61,6 +81,7 @@
               max_consecutive_tools=config.harness.max_consecutive_tools,
               require_tool_approval=config.harness.require_tool_approval,
               allowed_skills=config.harness.allowed_skills,
+              stream=config.harness.stream,
           ),
           session=SessionState(id=config.session_id),
           model=model_cls.from_cfg(config),
@@ -69,17 +90,17 @@
       )
   ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [ ] **Step 6: Run test to verify it passes**
   
   Run: `PYTHONPATH=. .venv/bin/pytest tests/test_config_models.py`
   Expected: PASS
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 7: Commit**
   
   Run:
   ```bash
-  git add jarvis/runtime.py tests/test_config_models.py
-  git commit -m "feat: extend RuntimeConfig with harness parameters"
+  git add pyproject.toml jarvis/config.py jarvis/runtime.py tests/test_config_models.py
+  git commit -m "feat: add pyyaml to runtime deps and extend configs with stream"
   ```
 
 ---
@@ -114,11 +135,15 @@
       ctx = MockContext(max_consec=2)
       call = ToolCall(call_id="c1", tool_name="ls", arguments={})
       
+      # Reset counter for a mock session
+      from types import SimpleNamespace
+      session = SimpleNamespace(id="s1")
+      ctx.session = session
+      await hook.before_model(ctx, [])
+      
       # First call should succeed
       r1 = await hook.before_tool(ctx, call)
       assert r1.stop is False
-      
-      # Simulate turn model loop by informing the hook of tool progress
       await hook.after_tool(ctx, call, ToolResult("c1", "ls", "ok"))
       
       # Second call should succeed
@@ -164,7 +189,6 @@
           self._counts: dict[int, int] = {}
           
       async def before_model(self, ctx: object, messages: list[Message]) -> HookResult:
-          # Reset budget counter at the start of a turn (before model runs)
           session = getattr(ctx, "session")
           self._counts[id(session)] = 0
           return HookResult()
@@ -195,7 +219,6 @@
               
           handler = getattr(ctx, "approval_handler", None)
           if handler is None:
-              # If approval is required but no handler is registered, fail safe (reject tool call)
               return HookResult(skip_tool=True, reason="Tool approval required but no handler registered")
               
           import inspect
@@ -207,7 +230,7 @@
               return HookResult(skip_tool=True, reason="Tool call rejected by user")
           return HookResult()
   ```
-  Also update `_default_hooks()` in `jarvis/runtime.py` to include these hooks:
+  Update `_default_hooks()` in `jarvis/runtime.py`:
   ```python
   def _default_hooks() -> list[TurnHook]:
       hooks: list[TurnHook] = [
@@ -239,10 +262,12 @@
 
 **Files:**
 - Create: `jarvis/mcp.py`
-- Modify: `jarvis/runtime.py`, `jarvis/tools.py`
+- Modify: `jarvis/runtime.py`
 - Create: `tests/test_mcp_client.py`
 
-- [ ] **Step 1: Write failing tests for MCP client registration and routing**
+*Note on gap-less lazy initialization:* The MCP client manager is initialized inside `AgentSession.submit` *before* the session executes `run_turn()`. This guarantees that MCP tools are dynamically retrieved and added to the `ToolRegistry` before the model's tool schema is generated for the first model call.
+
+- [ ] **Step 1: Write failing tests for MCP client registration and error handling**
   
   Create `tests/test_mcp_client.py`:
   ```python
@@ -252,7 +277,6 @@
   from jarvis.runtime import AgentSession
   from jarvis.tools import ToolRegistry, ToolCall
   
-  # A simple mock MCP settings block to connect to a dummy command
   MOCK_MCP_SETTINGS = {
       "mcpServers": {
           "mock_server": {
@@ -268,7 +292,6 @@
       config_file = tmp_path / "mcp_settings.json"
       config_file.write_text(json.dumps(MOCK_MCP_SETTINGS))
       
-      # Mock the connect call so we don't spawn subprocesses in this test
       class MockGroup:
           def __init__(self):
               from types import SimpleNamespace
@@ -284,6 +307,9 @@
           async def connect_to_server(self, params): pass
           async def call_tool(self, name, args):
               from types import SimpleNamespace
+              # Mock standard error block propagation
+              if name == "mcp_error_tool":
+                  return SimpleNamespace(content=[SimpleNamespace(text="mcp error msg")], isError=True)
               return SimpleNamespace(content=[SimpleNamespace(text="mcp response")], isError=False)
       
       monkeypatch.setattr("jarvis.mcp.ClientSessionGroup", MockGroup)
@@ -295,16 +321,21 @@
       
       res = await tools[0].handler({})
       assert res == "mcp response"
+      
+      # Mock the error path
+      manager.group.tools["mcp_error_tool"] = manager.group.tools["mcp_hello"]
+      with pytest.raises(ValueError, match="mcp error msg"):
+          await manager.execute_tool("mcp_error_tool", {})
   ```
 
 - [ ] **Step 2: Run test to verify it fails**
   
   Run: `PYTHONPATH=. .venv/bin/pytest tests/test_mcp_client.py`
-  Expected: FAIL (ModuleNotFoundError / ImportError for `jarvis/mcp.py`)
+  Expected: FAIL (ModuleNotFoundError for `jarvis/mcp.py`)
 
 - [ ] **Step 3: Create `jarvis/mcp.py`**
   
-  Create `jarvis/mcp.py` containing the `McpClientManager`:
+  Create `jarvis/mcp.py`:
   ```python
   import json
   import os
@@ -353,7 +384,6 @@
                       )
                   await self.group.connect_to_server(params)
               except Exception as exc:
-                  # Log failure to connect to this server, but continue with others
                   print(f"Failed to connect to MCP server {name}: {exc}")
                   
           jarvis_tools: list[Tool] = []
@@ -393,10 +423,8 @@
 
 - [ ] **Step 4: Update `AgentSession` in `jarvis/runtime.py` and `AgentContext`**
   
-  Add properties to `AgentContext` and initialize `McpClientManager` in `AgentSession.submit`.
-  In `jarvis/runtime.py`, add `mcp_manager` field to `AgentContext`:
+  In `jarvis/runtime.py`, add fields to `AgentContext` and initialize `McpClientManager` inside `submit()` before running the turn:
   ```python
-  # Target line 31-38:
   @dataclass(slots=True)
   class AgentContext:
       config: RuntimeConfig
@@ -408,7 +436,7 @@
       mcp_manager: Any | None = field(default=None, compare=False)
       approval_handler: Any | None = field(default=None, compare=False)
   ```
-  In `AgentSession.__init__`:
+  Update `AgentSession.__init__`:
   ```python
   class AgentSession:
       def __init__(self, ctx: AgentContext, kernel: object) -> None:
@@ -417,7 +445,7 @@
           self._lock = asyncio.Lock()
           self._mcp_initialized = False
   ```
-  In `AgentSession.submit`:
+  Update `AgentSession.submit`:
   ```python
       async def submit(self, message: Message) -> AsyncIterator[AgentEvent]:
           async with self._lock:
@@ -468,11 +496,8 @@
   Create `tests/test_skills.py`:
   ```python
   import pytest
-  import shutil
   from pathlib import Path
-  from jarvis.runtime import AgentContext, RuntimeConfig, SessionState
   from jarvis.tools import ToolRegistry
-  from jarvis.hooks import HookResult
   from jarvis.models.base import Message
   
   MOCK_SKILL_MD = """---
@@ -502,12 +527,12 @@
       scripts_dir = skill_dir / "scripts"
       scripts_dir.mkdir()
       script_file = scripts_dir / "commit.sh"
-      script_file.write_text("#!/bin/sh\necho \"committed: $message\"", encoding="utf-8")
+      # Verifies uppercase environment variable convention is active
+      script_file.write_text("#!/bin/sh\necho \"committed: $MESSAGE\"", encoding="utf-8")
       script_file.chmod(0o755)
       
       manager = SkillManager(skills_root=str(tmp_path / "skills"))
       
-      # Mock context with allowed skill
       from types import SimpleNamespace
       ctx = SimpleNamespace(
           config=SimpleNamespace(allowed_skills=["mock_git"]),
@@ -517,7 +542,11 @@
       skills = await manager.load_allowed_skills(ctx)
       assert len(skills) == 1
       assert skills[0].name == "mock_git"
-      assert "committed: $message" in skills[0].tools["mock_commit"]["script"]
+      
+      # Run mock script tool
+      committed_tool = ctx.tools._tools["mock_commit"]
+      res = await committed_tool.handler({"message": "initial commit"})
+      assert "committed: initial commit" in res
       
       # Test prompt hook
       from jarvis.hooks import SkillInstructionsHook
@@ -530,11 +559,11 @@
 - [ ] **Step 2: Run test to verify it fails**
   
   Run: `PYTHONPATH=. .venv/bin/pytest tests/test_skills.py`
-  Expected: FAIL (ModuleNotFoundError / ImportErrors)
+  Expected: FAIL (ModuleNotFoundError for `jarvis/skills.py`)
 
 - [ ] **Step 3: Create `jarvis/skills.py`**
   
-  Create `jarvis/skills.py` to parse skill folders:
+  Create `jarvis/skills.py` to parse skill folders and support dual case environment variable mapping:
   ```python
   import os
   import yaml
@@ -586,7 +615,6 @@
               loaded = LoadedSkill(name=name, instructions=instructions, tools=tools, dir_path=entry)
               loaded_skills.append(loaded)
               
-              # Register skill-backed tools
               for t_name, t_cfg in tools.items():
                   script_path = t_cfg.get("script")
                   desc = t_cfg.get("description", "")
@@ -606,12 +634,11 @@
           async def handler(args: dict[str, Any]) -> str:
               script_path = (skill_dir / script_rel).resolve()
               
-              # Pass arguments as environment variables
               env = os.environ.copy()
               for k, v in args.items():
-                  env[str(k)] = str(v)
+                  env[str(k).upper()] = str(v)
+                  env[str(k).lower()] = str(v)
                   
-              # Spawn script subprocess
               proc = await asyncio.create_subprocess_exec(
                   str(script_path),
                   stdout=asyncio.subprocess.PIPE,
@@ -633,7 +660,6 @@
           if not self._skills:
               return HookResult()
               
-          # Append skill instructions to system prompt
           skill_prompts = []
           for s in self._skills:
               skill_prompts.append(f"### Skill: {s.name}\n{s.instructions}")
@@ -653,20 +679,22 @@
   
   In `jarvis/runtime.py`:
   ```python
-  # Modify submit to load allowed skills on initialization
       async def submit(self, message: Message) -> AsyncIterator[AgentEvent]:
           async with self._lock:
               if not self._mcp_initialized:
-                  # Initialize Skills
                   from jarvis.skills import SkillManager, SkillInstructionsHook
                   skill_mgr = SkillManager()
                   skills = await skill_mgr.load_allowed_skills(self.ctx)
                   if skills:
                       self.ctx.hooks.append(SkillInstructionsHook(skills))
                       
-                  # Initialize MCP Client
                   from jarvis.mcp import McpClientManager
-                  # ... (keep existing MCP initialization)
+                  manager = McpClientManager()
+                  mcp_tools = await manager.initialize()
+                  for t in mcp_tools:
+                      self.ctx.tools.register(t)
+                  self.ctx.mcp_manager = manager
+                  self._mcp_initialized = True
   ```
 
 - [ ] **Step 5: Run tests to verify they pass**
@@ -684,13 +712,13 @@
 
 ---
 
-### Task 5: Model Response Streaming and Delta Event Emission
+### Task 5: Model Response Streaming and Delta Event Emission with Fallback
 
 **Files:**
 - Modify: `jarvis/kernel.py`, `jarvis/models/openai.py`, `jarvis/models/anthropic.py`
 - Create: `tests/test_kernel_streaming.py`
 
-- [ ] **Step 1: Write failing tests for streaming text deltas**
+- [ ] **Step 1: Write failing tests for streaming text deltas and tool call accumulation**
   
   Create `tests/test_kernel_streaming.py`:
   ```python
@@ -699,24 +727,35 @@
   from jarvis.runtime import AgentContext, RuntimeConfig, SessionState
   from jarvis.tools import ToolRegistry
   from jarvis.kernel import AgentKernel
-  from jarvis.events import TextDeltaEvent, MessageEvent
-  from jarvis.models.base import BaseModelClient, Message, ModelResponse
+  from jarvis.events import TextDeltaEvent, MessageEvent, ToolCallEvent
+  from jarvis.models.base import BaseModelClient, Message, ModelResponse, ToolCall
   
   class MockStreamingModel(BaseModelClient):
       @classmethod
       def from_cfg(cls, cfg): return cls()
       
       async def generate(self, messages, tools):
-          return ModelResponse(content="completed response")
+          return ModelResponse(content="fallback completed response")
           
       async def generate_stream(self, messages, tools) -> AsyncGenerator[ModelResponse, None]:
           yield ModelResponse(content="hello ")
           yield ModelResponse(content="streaming world")
+          yield ModelResponse(content=None, tool_calls=[ToolCall(call_id="c1", tool_name="ls", arguments={})])
+  
+  class MockNoStreamingModel(BaseModelClient):
+      @classmethod
+      def from_cfg(cls, cfg): return cls()
+      
+      async def generate(self, messages, tools):
+          return ModelResponse(content="one-shot completion")
+          
+      async def generate_stream(self, messages, tools) -> AsyncGenerator[ModelResponse, None]:
+          raise NotImplementedError("Streaming is not supported")
   
   @pytest.mark.asyncio
   async def test_kernel_run_turn_streams_events() -> None:
       ctx = AgentContext(
-          config=RuntimeConfig(),
+          config=RuntimeConfig(stream=True),
           session=SessionState(id="s1"),
           model=MockStreamingModel(),
           tools=ToolRegistry()
@@ -731,9 +770,27 @@
       deltas = [ev.content for ev in events if isinstance(ev, TextDeltaEvent)]
       assert deltas == ["hello ", "streaming world"]
       
-      # Verify final message event has the full accumulated content
+      # Verify tool call was accumulated and emitted
+      tcalls = [ev.tool_call.tool_name for ev in events if isinstance(ev, ToolCallEvent)]
+      assert tcalls == ["ls"]
+  
+  @pytest.mark.asyncio
+  async def test_kernel_generate_stream_fallback() -> None:
+      ctx = AgentContext(
+          config=RuntimeConfig(stream=True),
+          session=SessionState(id="s1"),
+          model=MockNoStreamingModel(),
+          tools=ToolRegistry()
+      )
+      kernel = AgentKernel()
+      
+      events = []
+      async for event in kernel.run_turn(ctx, Message(role="user", content="hi")):
+          events.append(event)
+          
+      # Fallback should call generate()
       msg_events = [ev.message.content for ev in events if isinstance(ev, MessageEvent)]
-      assert msg_events == ["hello streaming world"]
+      assert msg_events == ["one-shot completion"]
   ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -741,177 +798,41 @@
   Run: `PYTHONPATH=. .venv/bin/pytest tests/test_kernel_streaming.py`
   Expected: FAIL (TextDeltaEvents not emitted/assert failures)
 
-- [ ] **Step 3: Update `AgentKernel` inside `jarvis/kernel.py` to stream model generation**
+- [ ] **Step 3: Update `AgentKernel` inside `jarvis/kernel.py` to stream model generation with fallback**
   
-  Modify `jarvis/kernel.py` around line 25:
+  Modify `jarvis/kernel.py` to support `stream=True` configuration, checking generator fallback on `NotImplementedError`:
   ```python
-  # Replace: response = await ctx.model.generate(messages, ctx.tools.schemas())
-  # With streaming:
-  ```
-  Let's replace `run_turn` block with:
-  ```python
-                  # Instead of one-shot ctx.model.generate, we stream:
-                  accumulated_content = ""
-                  accumulated_tool_calls = []
+                  response = None
                   
-                  # We call generate_stream:
-                  async for chunk in ctx.model.generate_stream(messages, ctx.tools.schemas()):
-                      if chunk.content:
-                          accumulated_content += chunk.content
-                          yield TextDeltaEvent(session_id=ctx.session.id, content=chunk.content)
-                      if chunk.tool_calls:
-                          accumulated_tool_calls.extend(chunk.tool_calls)
+                  # Check if streaming is enabled via config
+                  if getattr(ctx.config, "stream", True):
+                      try:
+                          accumulated_content = ""
+                          accumulated_tool_calls = []
                           
-                  response = ModelResponse(
-                      content=accumulated_content if accumulated_content else None,
-                      tool_calls=accumulated_tool_calls,
-                      raw_response=None
-                  )
+                          async for chunk in ctx.model.generate_stream(messages, ctx.tools.schemas()):
+                              if chunk.content:
+                                  accumulated_content += chunk.content
+                                  yield TextDeltaEvent(session_id=ctx.session.id, content=chunk.content)
+                              if chunk.tool_calls:
+                                  accumulated_tool_calls.extend(chunk.tool_calls)
+                                  
+                          response = ModelResponse(
+                              content=accumulated_content if accumulated_content else None,
+                              tool_calls=accumulated_tool_calls,
+                              raw_response=None
+                          )
+                      except NotImplementedError:
+                          pass
+                          
+                  if response is None:
+                      # One-shot generate() fallback path
+                      response = await ctx.model.generate(messages, ctx.tools.schemas())
   ```
-  Wait! Let's verify that we import `TextDeltaEvent` at the top of `jarvis/kernel.py` (line 5 already has `TextDeltaEvent`). Yes!
 
 - [ ] **Step 4: Implement `generate_stream` in OpenAI and Anthropic clients**
   
-  Open `jarvis/models/openai.py`. Update `generate_stream`:
-  ```python
-      async def generate_stream(self, messages: list[Message], tools: list[Any]) -> AsyncGenerator[ModelResponse, None]:
-          client = await self._get_client()
-          openai_msgs: list[dict[str, Any]] = []
-          for m in messages:
-              msg: dict[str, Any] = {"role": m.role, "content": m.content}
-              if m.role == "assistant" and m.metadata and "tool_calls" in m.metadata:
-                  msg["tool_calls"] = [
-                      {"id": tc["call_id"], "type": "function", "function": {"name": tc["tool_name"], "arguments": json.dumps(tc["arguments"])}}
-                      for tc in m.metadata["tool_calls"]
-                  ]
-              elif m.role == "tool" and m.metadata:
-                  if "tool_call_id" in m.metadata:
-                      msg["tool_call_id"] = m.metadata["tool_call_id"]
-              openai_msgs.append(msg)
-          
-          is_thinking_enabled = False
-          if "thinking" in self.extra_params:
-              thinking_val = self.extra_params["thinking"]
-              if thinking_val != "disabled" and not (isinstance(thinking_val, dict) and thinking_val.get("type") == "disabled"):
-                  is_thinking_enabled = True
-  
-          kwargs: dict[str, Any] = {
-              "model": self.model_name,
-              "messages": openai_msgs,
-              "stream": True
-          }
-          if not is_thinking_enabled:
-              kwargs["temperature"] = self.temperature
-              
-          if self.max_tokens is not None:
-              kwargs["max_tokens"] = self.max_tokens
-          if tools:
-              kwargs["tools"] = [{"type": "function", "function": t} for t in tools]
-          if self.extra_params:
-              extra_body = {k: v for k, v in self.extra_params.items() if k not in ("temperature", "max_tokens", "tools", "model", "messages", "stream")}
-              if extra_body:
-                  kwargs["extra_body"] = extra_body
-  
-          response = await client.chat.completions.create(**kwargs)
-          
-          # Accumulate tool calls over chunks
-          # In OpenAI API, tool call arguments are streamed in fragments
-          tool_calls_builder = {}
-          
-          async for chunk in response:
-              if not chunk.choices:
-                  continue
-              delta = chunk.choices[0].delta
-              
-              content = delta.content or ""
-              tool_calls = []
-              
-              if delta.tool_calls:
-                  for tc_delta in delta.tool_calls:
-                      idx = tc_delta.index
-                      if idx not in tool_calls_builder:
-                          tool_calls_builder[idx] = {
-                              "call_id": tc_delta.id or "",
-                              "tool_name": tc_delta.function.name or "",
-                              "arguments": ""
-                          }
-                      else:
-                          if tc_delta.id:
-                              tool_calls_builder[idx]["call_id"] = tc_delta.id
-                          if tc_delta.function and tc_delta.function.name:
-                              tool_calls_builder[idx]["tool_name"] = tc_delta.function.name
-                              
-                      if tc_delta.function and tc_delta.function.arguments:
-                          tool_calls_builder[idx]["arguments"] += tc_delta.function.arguments
-                          
-              if content or delta.tool_calls:
-                  # Parse any completed tool call schemas if finished or return empty
-                  yield ModelResponse(content=content if content else None, tool_calls=[], raw_response=chunk)
-                  
-          # Emit the accumulated tool calls at the end of the stream
-          final_tool_calls = []
-          for idx, tc in tool_calls_builder.items():
-              try:
-                  args = json.loads(tc["arguments"]) if tc["arguments"] else {}
-              except json.JSONDecodeError:
-                  args = {}
-              final_tool_calls.append(ToolCall(call_id=tc["call_id"], tool_name=tc["tool_name"], arguments=args))
-              
-          if final_tool_calls:
-              yield ModelResponse(content=None, tool_calls=final_tool_calls, raw_response=None)
-  ```
-  
-  Now open `jarvis/models/anthropic.py`. Update `generate_stream`:
-  ```python
-      async def generate_stream(self, messages: list[Message], tools: list[Any]) -> AsyncGenerator[ModelResponse, None]:
-          client = await self._get_client()
-          anthropic_msgs = [{"role": "assistant" if m.role == "assistant" else "user", "content": m.content} for m in messages if m.role != "system"]
-          system_prompt = next((m.content for m in messages if m.role == "system"), None)
-          
-          kwargs: dict[str, Any] = {
-              "model": self.model_name,
-              "messages": anthropic_msgs,
-              "max_tokens": self.max_tokens,
-              "temperature": self.temperature
-          }
-          if system_prompt:
-              kwargs["system"] = system_prompt
-          if tools:
-              kwargs["tools"] = tools
-  
-          # Let's accumulate tool use events as well
-          tool_calls_builder = {}
-          
-          async with client.messages.stream(**kwargs) as stream:
-              async for event in stream:
-                  # Anthropic client stream events can be parsed
-                  # E.g. content block start, delta, etc.
-                  # Standard stream.text_stream only yields text.
-                  # To capture tools, we use raw event stream or helper
-                  if event.type == "content_block_start" and event.content_block.type == "tool_use":
-                      tb = event.content_block
-                      tool_calls_builder[event.index] = {
-                          "call_id": tb.id,
-                          "tool_name": tb.name,
-                          "arguments": ""
-                      }
-                  elif event.type == "content_block_delta" and event.delta.type == "input_json_delta":
-                      tool_calls_builder[event.index]["arguments"] += event.delta.partial_json
-                  elif event.type == "content_block_delta" and event.delta.type == "text_delta":
-                      yield ModelResponse(content=event.delta.text, tool_calls=[], raw_response=None)
-                      
-          # Emit accumulated tool calls at the end
-          final_tool_calls = []
-          for idx, tc in tool_calls_builder.items():
-              try:
-                  args = json.loads(tc["arguments"]) if tc["arguments"] else {}
-              except json.JSONDecodeError:
-                  args = {}
-              final_tool_calls.append(ToolCall(call_id=tc["call_id"], tool_name=tc["tool_name"], arguments=args))
-              
-          if final_tool_calls:
-              yield ModelResponse(content=None, tool_calls=final_tool_calls, raw_response=None)
-  ```
+  Modify `jarvis/models/openai.py` and `jarvis/models/anthropic.py` as detailed in the original design to parse and accumulate streamed chunk deltas (text and tool call blocks) and yield them correctly. (Refer to Task 5 in previous revision for exact implementation block).
 
 - [ ] **Step 5: Run tests to verify they pass**
   
@@ -923,7 +844,7 @@
   Run:
   ```bash
   git add jarvis/kernel.py jarvis/models/openai.py jarvis/models/anthropic.py tests/test_kernel_streaming.py
-  git commit -m "feat: enable kernel model response streaming and delta events"
+  git commit -m "feat: enable kernel model response streaming with fallback"
   ```
 
 ---
@@ -937,7 +858,7 @@
 
 - [ ] **Step 1: Write failing tests for retry logic on transient errors**
   
-  Create `tests/test_error_recovery.py`:
+  Create `tests/test_error_recovery.py` testing SDK dynamic module `isinstance` checking:
   ```python
   import pytest
   from jarvis.retry import retry_with_backoff
@@ -954,7 +875,7 @@
           global counter
           counter += 1
           if counter < 3:
-              raise ValueError("Transient error")
+              raise ConnectionError("Transient error")
           return "success"
           
       res = await unstable_api()
@@ -974,11 +895,11 @@
 - [ ] **Step 2: Run test to verify it fails**
   
   Run: `PYTHONPATH=. .venv/bin/pytest tests/test_error_recovery.py`
-  Expected: FAIL (ModuleNotFoundError / ImportErrors)
+  Expected: FAIL (ModuleNotFoundError for `jarvis/retry.py`)
 
 - [ ] **Step 3: Create `jarvis/retry.py`**
   
-  Create `jarvis/retry.py`:
+  Create `jarvis/retry.py` with dynamic SDK module type checks:
   ```python
   import asyncio
   import random
@@ -996,23 +917,37 @@
                       return await func(*args, **kwargs)
                   except Exception as exc:
                       last_exc = exc
+                      
                       # Identify transient errors to retry:
-                      # We retry on:
-                      # - openai.RateLimitError / openai.InternalServerError / openai.APIConnectionError
-                      # - anthropic.RateLimitError / anthropic.InternalServerError / anthropic.APIConnectionError
-                      # - ConnectionError / TimeoutError / httpx.HTTPError
-                      # - generic 5xx / 429 errors from standard APIs
-                      exc_name = type(exc).__name__
-                      is_transient = (
-                          "RateLimit" in exc_name or
-                          "InternalServer" in exc_name or
-                          "APIConnection" in exc_name or
-                          isinstance(exc, (ConnectionError, TimeoutError)) or
-                          "Timeout" in exc_name or
-                          "HTTPError" in exc_name or
-                          "HTTPStatusError" in exc_name or
-                          getattr(exc, "status_code", 0) in (429, 500, 502, 503, 504)
-                      )
+                      is_transient = isinstance(exc, (ConnectionError, TimeoutError))
+                      
+                      if not is_transient:
+                          # Dynamic check for openai
+                          try:
+                              import openai
+                              if isinstance(exc, (openai.RateLimitError, openai.InternalServerError, openai.APIConnectionError)):
+                                  is_transient = True
+                          except ImportError:
+                              pass
+                              
+                      if not is_transient:
+                          # Dynamic check for anthropic
+                          try:
+                              import anthropic
+                              if isinstance(exc, (anthropic.RateLimitError, anthropic.InternalServerError, anthropic.APIConnectionError)):
+                                  is_transient = True
+                          except ImportError:
+                              pass
+                              
+                      if not is_transient:
+                          exc_name = type(exc).__name__
+                          is_transient = (
+                              "Timeout" in exc_name or
+                              "HTTPError" in exc_name or
+                              "HTTPStatusError" in exc_name or
+                              getattr(exc, "status_code", 0) in (429, 500, 502, 503, 504)
+                          )
+                          
                       if not is_transient or attempt == max_retries:
                           raise exc
                       
@@ -1027,28 +962,7 @@
 
 - [ ] **Step 4: Apply retry decorator to OpenAI and Anthropic clients**
   
-  In `jarvis/models/openai.py`:
-  ```python
-  # Decorate generate and generate_stream
-  from jarvis.retry import retry_with_backoff
-  
-  # Update OpenAIClient.generate:
-      @retry_with_backoff(max_retries=3, base_delay=1.0)
-      async def generate(self, messages: list[Message], tools: list[Any]) -> ModelResponse:
-          # ... existing code
-  ```
-  Wait! Since `generate_stream` returns an async generator, we cannot apply a standard async function decorator to it directly because it returns a generator object instantly.
-  Instead, we can wrap the generator's internal loop or apply a retry around the initialization of the stream.
-  Let's wrap the streaming request:
-  ```python
-      # Inside generate_stream:
-      @retry_with_backoff(max_retries=3, base_delay=1.0)
-      async def _get_stream():
-          return await client.chat.completions.create(**kwargs)
-      
-      response = await _get_stream()
-  ```
-  Apply the same pattern to `jarvis/models/anthropic.py` for both `generate` and `generate_stream`.
+  Apply `retry_with_backoff` decorator to OpenAI and Anthropic clients as specified.
 
 - [ ] **Step 5: Run tests to verify they pass**
   
