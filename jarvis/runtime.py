@@ -48,9 +48,18 @@ class AgentSession:
         self.ctx = ctx
         self.kernel = kernel
         self._lock = asyncio.Lock()
+        self._mcp_initialized = False
 
     async def submit(self, message: Message) -> AsyncIterator[AgentEvent]:
         async with self._lock:
+            if not self._mcp_initialized:
+                from jarvis.mcp import McpClientManager
+                manager = McpClientManager()
+                mcp_tools = await manager.initialize()
+                for t in mcp_tools:
+                    self.ctx.tools.register(t)
+                self.ctx.mcp_manager = manager
+                self._mcp_initialized = True
             token = current_context.set(self.ctx)
             event_queue: asyncio.Queue[AgentEvent | None] = asyncio.Queue()
             
@@ -95,6 +104,13 @@ class AgentSession:
                         pass
                 else:
                     await task
+
+    async def close(self) -> None:
+        async with self._lock:
+            if self.ctx.mcp_manager:
+                await self.ctx.mcp_manager.close()
+                self.ctx.mcp_manager = None
+                self._mcp_initialized = False
 
 
 def _default_hooks() -> list[TurnHook]:
