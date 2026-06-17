@@ -1,5 +1,7 @@
 import os
+import sys
 import yaml
+import json
 import asyncio
 from dataclasses import dataclass
 from pathlib import Path
@@ -40,15 +42,24 @@ class SkillManager:
             if len(parts) < 3:
                 continue
                 
-            metadata = yaml.safe_load(parts[1])
+            try:
+                metadata = yaml.safe_load(parts[1]) or {}
+            except yaml.YAMLError as exc:
+                print(f"Error parsing metadata for skill {entry.name}: {exc}", file=sys.stderr)
+                continue
+                
             instructions = parts[2].strip()
             name = metadata.get("name", entry.name)
             tools = metadata.get("tools", {})
+            if not isinstance(tools, dict):
+                tools = {}
             
             loaded = LoadedSkill(name=name, instructions=instructions, tools=tools, dir_path=entry)
             loaded_skills.append(loaded)
             
             for t_name, t_cfg in tools.items():
+                if not isinstance(t_cfg, dict):
+                    continue
                 script_path = t_cfg.get("script")
                 desc = t_cfg.get("description", "")
                 params = t_cfg.get("parameters", {"type": "object", "properties": {}})
@@ -65,22 +76,43 @@ class SkillManager:
         
     def _create_tool_handler(self, skill_dir: Path, script_rel: str) -> Any:
         async def handler(args: dict[str, Any]) -> str:
-            script_path = (skill_dir / script_rel).resolve()
-            
-            env = os.environ.copy()
-            for k, v in args.items():
-                env[str(k).upper()] = str(v)
-                env[str(k).lower()] = str(v)
+            try:
+                script_path = (skill_dir / script_rel).resolve()
+                try:
+                    script_path.relative_to(skill_dir.resolve())
+                except ValueError:
+                    raise ValueError(f"Path escape detected: {script_rel} escapes skill directory")
                 
-            proc = await asyncio.create_subprocess_exec(
-                str(script_path),
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.STDOUT,
-                env=env,
-                cwd=str(skill_dir)
-            )
-            stdout, _ = await proc.communicate()
-            return stdout.decode("utf-8", errors="replace")
+                env = os.environ.copy()
+                for k, v in args.items():
+                    val_str = json.dumps(v) if isinstance(v, (dict, list)) else str(v)
+                    env[str(k).upper()] = val_str
+                    env[str(k).lower()] = val_str
+                    
+                proc = await asyncio.create_subprocess_exec(
+                    str(script_path),
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.STDOUT,
+                    env=env,
+                    cwd=str(skill_dir)
+                )
+                try:
+                    stdout, _ = await proc.communicate()
+                except asyncio.CancelledError:
+                    proc.terminate()
+                    try:
+                        await asyncio.wait_for(proc.wait(), timeout=2.0)
+                    except asyncio.TimeoutError:
+                        proc.kill()
+                        await proc.wait()
+                    raise
+                    
+                stdout_str = stdout.decode("utf-8", errors="replace")
+                if proc.returncode != 0:
+                    return f"Tool script failed with exit code {proc.returncode}.\nOutput:\n{stdout_str}"
+                return stdout_str
+            except Exception as exc:
+                return f"Error executing tool script: {exc}"
         return handler
 
 class SkillInstructionsHook(NoopTurnHook):
@@ -99,10 +131,11 @@ class SkillInstructionsHook(NoopTurnHook):
         instructions_text = "\n\n".join(skill_prompts)
         
         new_msgs = list(messages)
-        if new_msgs and new_msgs[0].role == "system":
-            orig_sys = new_msgs[0].content
-            new_msgs[0] = Message(role="system", content=f"{orig_sys}\n\n{instructions_text}")
-        else:
-            new_msgs.insert(0, Message(role="system", content=instructions_text))
-            
+        if not any(instructions_text in m.content for m in new_msgs if m.role == "system"):
+            if new_msgs and new_msgs[0].role == "system":
+                orig_sys = new_msgs[0].content
+                new_msgs[0] = Message(role="system", content=f"{orig_sys}\n\n{instructions_text}")
+            else:
+                new_msgs.insert(0, Message(role="system", content=instructions_text))
+                
         return HookResult(messages=new_msgs)

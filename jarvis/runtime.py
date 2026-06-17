@@ -50,6 +50,7 @@ class AgentSession:
         self._lock = asyncio.Lock()
         self._mcp_initialized = False
         self._mcp_tool_names: list[str] = []
+        self._skill_tool_names: list[str] = []
 
     async def submit(self, message: Message) -> AsyncIterator[AgentEvent]:
         async with self._lock:
@@ -59,6 +60,10 @@ class AgentSession:
                 skills = await skill_mgr.load_allowed_skills(self.ctx)
                 if skills:
                     self.ctx.hooks.append(SkillInstructionsHook(skills))
+                    for s in skills:
+                        for t_name, t_cfg in s.tools.items():
+                            if isinstance(t_cfg, dict):
+                                self._skill_tool_names.append(t_name)
 
                 from jarvis.mcp import McpClientManager
                 manager = McpClientManager()
@@ -122,6 +127,12 @@ class AgentSession:
             for name in self._mcp_tool_names:
                 self.ctx.tools._tools.pop(name, None)
             self._mcp_tool_names.clear()
+            for name in self._skill_tool_names:
+                self.ctx.tools._tools.pop(name, None)
+            self._skill_tool_names.clear()
+            
+            from jarvis.skills import SkillInstructionsHook
+            self.ctx.hooks = [h for h in self.ctx.hooks if not isinstance(h, SkillInstructionsHook)]
 
 
 def _default_hooks() -> list[TurnHook]:
