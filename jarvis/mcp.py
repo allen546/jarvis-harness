@@ -1,5 +1,7 @@
 import json
 import os
+import sys
+from contextlib import AsyncExitStack
 from typing import Any
 from mcp import StdioServerParameters
 from mcp.client.session_group import ClientSessionGroup, SseServerParameters
@@ -9,6 +11,7 @@ class McpClientManager:
     def __init__(self, config_path: str = "config/mcp_settings.json") -> None:
         self.config_path = config_path
         self.group: ClientSessionGroup | None = None
+        self.exit_stack = AsyncExitStack()
         
     async def initialize(self) -> list[Tool]:
         if not os.path.exists(self.config_path):
@@ -17,15 +20,16 @@ class McpClientManager:
         with open(self.config_path, "r", encoding="utf-8") as f:
             try:
                 data = json.load(f)
-            except Exception:
+            except Exception as exc:
+                print(f"Error parsing MCP settings JSON: {exc}", file=sys.stderr)
                 return []
                 
         servers = data.get("mcpServers", {})
         if not servers:
             return []
             
-        self.group = ClientSessionGroup()
-        await self.group.__aenter__()
+        self.group = ClientSessionGroup(exit_stack=self.exit_stack)
+        await self.exit_stack.enter_async_context(self.group)
         
         for name, cfg in servers.items():
             try:
@@ -77,6 +81,5 @@ class McpClientManager:
         return text_result
         
     async def close(self) -> None:
-        if self.group:
-            await self.group.__aexit__(None, None, None)
-            self.group = None
+        await self.exit_stack.aclose()
+        self.group = None

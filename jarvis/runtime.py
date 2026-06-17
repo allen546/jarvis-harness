@@ -49,6 +49,7 @@ class AgentSession:
         self.kernel = kernel
         self._lock = asyncio.Lock()
         self._mcp_initialized = False
+        self._mcp_tool_names: list[str] = []
 
     async def submit(self, message: Message) -> AsyncIterator[AgentEvent]:
         async with self._lock:
@@ -58,6 +59,7 @@ class AgentSession:
                 mcp_tools = await manager.initialize()
                 for t in mcp_tools:
                     self.ctx.tools.register(t)
+                    self._mcp_tool_names.append(t.name)
                 self.ctx.mcp_manager = manager
                 self._mcp_initialized = True
             token = current_context.set(self.ctx)
@@ -111,6 +113,9 @@ class AgentSession:
                 await self.ctx.mcp_manager.close()
                 self.ctx.mcp_manager = None
                 self._mcp_initialized = False
+            for name in self._mcp_tool_names:
+                self.ctx.tools._tools.pop(name, None)
+            self._mcp_tool_names.clear()
 
 
 def _default_hooks() -> list[TurnHook]:

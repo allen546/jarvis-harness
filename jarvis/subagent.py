@@ -95,6 +95,8 @@ async def close_subagent_tool(ctx: AgentContext, args: dict[str, Any]) -> dict[s
     sub_session_id = args.get("sub_session_id", "")
     sessions = ctx.session.metadata.get("subagent_sessions", {})
     if sub_session_id in sessions:
+        sub_session = sessions[sub_session_id]
+        await sub_session.close()
         del sessions[sub_session_id]
         
     active_list = ctx.session.metadata.get("active_subagents", [])
