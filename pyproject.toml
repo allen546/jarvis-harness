@@ -9,6 +9,7 @@ dependencies = [
     "qq-botpy>=1.2.0",
     "openai>=1.50.0",
     "anthropic>=0.30.0",
+    "pyyaml>=6.0.3",
 ]
 
 [dependency-groups]

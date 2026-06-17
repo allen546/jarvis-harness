@@ -15,6 +15,7 @@ class HarnessConfig(BaseModel):
     max_consecutive_tools: int = 5
     require_tool_approval: bool = False
     allowed_skills: list[str] = Field(default_factory=list)
+    stream: bool = True
 
 class SessionConfig(BaseModel):
     session_id: str = "default"

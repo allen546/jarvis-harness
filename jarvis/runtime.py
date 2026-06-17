@@ -18,6 +18,10 @@ current_context: ContextVar[AgentContext | None] = ContextVar("current_context",
 @dataclass(slots=True)
 class RuntimeConfig:
     system_prompt: str | None = None
+    max_consecutive_tools: int = 5
+    require_tool_approval: bool = False
+    allowed_skills: list[str] = field(default_factory=list)
+    stream: bool = True
 
 
 @dataclass(slots=True)
@@ -107,7 +111,13 @@ def context_from_config(config: SessionConfig, tools: ToolRegistry, hooks: list[
     provider = config.model.provider.lower()
     model_cls = get_model_class(provider)
     return AgentContext(
-        config=RuntimeConfig(system_prompt=config.harness.system_prompt),
+        config=RuntimeConfig(
+            system_prompt=config.harness.system_prompt,
+            max_consecutive_tools=config.harness.max_consecutive_tools,
+            require_tool_approval=config.harness.require_tool_approval,
+            allowed_skills=config.harness.allowed_skills,
+            stream=config.harness.stream,
+        ),
         session=SessionState(id=config.session_id),
         model=model_cls.from_cfg(config),
         tools=tools,

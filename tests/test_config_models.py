@@ -24,3 +24,19 @@ def test_configs_and_messages(tmp_path: Path) -> None:
     action = NativeAction(action_type="react", params={"emoji": "\U0001f44d"})
     msg = Message(role="user", content="Hello", attachments=[attachment], native_actions=[action])
     assert len(msg.attachments) == 1
+
+
+def test_runtime_config_extensions() -> None:
+    from jarvis.runtime import RuntimeConfig
+    config = RuntimeConfig(
+        system_prompt="test",
+        max_consecutive_tools=10,
+        require_tool_approval=True,
+        allowed_skills=["git"],
+        stream=False
+    )
+    assert config.max_consecutive_tools == 10
+    assert config.require_tool_approval is True
+    assert config.allowed_skills == ["git"]
+    assert config.stream is False
+
