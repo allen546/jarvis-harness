@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import inspect
 import json
 from pathlib import Path
 from typing import Protocol
@@ -140,20 +141,25 @@ class ContextCompressionHook(NoopTurnHook):
 
 
 class BudgetGuardHook(NoopTurnHook):
-    __slots__ = ("_counts",)
+    __slots__ = ("_counts", "_last_history_len")
     
     def __init__(self) -> None:
-        self._counts: dict[int, int] = {}
+        self._counts: dict[str, int] = {}
+        self._last_history_len: dict[str, int] = {}
         
     async def before_model(self, ctx: object, messages: list[Message]) -> HookResult:
         session = getattr(ctx, "session")
-        self._counts[id(session)] = 0
+        session_id = session.id
+        hist_len = len(session.history)
+        if self._last_history_len.get(session_id) != hist_len:
+            self._counts[session_id] = 0
+            self._last_history_len[session_id] = hist_len
         return HookResult()
         
     async def before_tool(self, ctx: object, tool_call: ToolCall) -> HookResult:
         session = getattr(ctx, "session")
         config = getattr(ctx, "config")
-        count = self._counts.get(id(session), 0)
+        count = self._counts.get(session.id, 0)
         limit = getattr(config, "max_consecutive_tools", 5)
         if count >= limit:
             return HookResult(stop=True, reason=f"Tool execution budget limit exceeded: max {limit} consecutive calls")
@@ -161,7 +167,13 @@ class BudgetGuardHook(NoopTurnHook):
         
     async def after_tool(self, ctx: object, tool_call: ToolCall, result: ToolResult) -> HookResult:
         session = getattr(ctx, "session")
-        self._counts[id(session)] = self._counts.get(id(session), 0) + 1
+        self._counts[session.id] = self._counts.get(session.id, 0) + 1
+        return HookResult()
+
+    async def after_turn(self, ctx: object, message: Message) -> HookResult:
+        session = getattr(ctx, "session")
+        self._counts.pop(session.id, None)
+        self._last_history_len.pop(session.id, None)
         return HookResult()
 
 
@@ -178,7 +190,6 @@ class ToolApprovalHook(NoopTurnHook):
         if handler is None:
             return HookResult(skip_tool=True, reason="Tool approval required but no handler registered")
             
-        import inspect
         approved = handler(tool_call)
         if inspect.isawaitable(approved):
             approved = await approved

@@ -20,7 +20,7 @@ async def test_budget_guard_hook() -> None:
     
     # Reset counter for a mock session
     from types import SimpleNamespace
-    session = SimpleNamespace(id="s1")
+    session = SimpleNamespace(id="s1", history=[])
     ctx.session = session
     await hook.before_model(ctx, [])
     
@@ -28,6 +28,9 @@ async def test_budget_guard_hook() -> None:
     r1 = await hook.before_tool(ctx, call)
     assert r1.stop is False
     await hook.after_tool(ctx, call, ToolResult("c1", "ls", "ok"))
+    
+    # Interleave before_model call within the same turn (history length unchanged)
+    await hook.before_model(ctx, [])
     
     # Second call should succeed
     r2 = await hook.before_tool(ctx, call)
@@ -38,6 +41,12 @@ async def test_budget_guard_hook() -> None:
     r3 = await hook.before_tool(ctx, call)
     assert r3.stop is True
     assert "limit" in r3.reason.lower()
+
+    # Simulate a new turn by appending to history, counter should reset
+    session.history.append("msg")
+    await hook.before_model(ctx, [])
+    r_reset = await hook.before_tool(ctx, call)
+    assert r_reset.stop is False
 
 @pytest.mark.asyncio
 async def test_tool_approval_hook() -> None:

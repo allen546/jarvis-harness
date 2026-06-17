@@ -4,12 +4,12 @@ import asyncio
 import os
 from contextvars import ContextVar
 from dataclasses import dataclass, field
-from typing import Any, AsyncIterator, Callable
+from typing import Any, AsyncIterator, Awaitable, Callable
 
 from jarvis.config import SessionConfig
 from jarvis.events import AgentEvent
 from jarvis.hooks import BudgetGuardHook, ContextCompressionHook, JSONLHistoryHook, ToolApprovalHook, TurnHook
-from jarvis.models.base import BaseModelClient, Message, get_model_class
+from jarvis.models.base import BaseModelClient, Message, ToolCall, get_model_class
 from jarvis.tools import ToolRegistry
 
 current_context: ContextVar[AgentContext | None] = ContextVar("current_context", default=None)
@@ -40,7 +40,7 @@ class AgentContext:
     hooks: list[TurnHook] = field(default_factory=list)
     emit_event: Callable[[AgentEvent], None] | None = None
     mcp_manager: Any | None = field(default=None, compare=False)
-    approval_handler: Any | None = field(default=None, compare=False)
+    approval_handler: Callable[[ToolCall], bool | Awaitable[bool]] | None = field(default=None, compare=False)
 
 
 class AgentSession:
