@@ -95,6 +95,7 @@ class AnthropicClient(BaseModelClient):
             mgr = client.messages.stream(**kwargs)
             return await mgr.__aenter__()
 
+        import sys
         stream = await _enter_stream()
         try:
             async for event in stream:
@@ -115,7 +116,10 @@ class AnthropicClient(BaseModelClient):
                     elif delta.type == "input_json_delta":
                         if index in tool_calls_builder:
                             tool_calls_builder[index]["arguments_str"] += delta.partial_json
-        finally:
+        except Exception:
+            await stream.__aexit__(*sys.exc_info())
+            raise
+        else:
             await stream.__aexit__(None, None, None)
 
         tool_calls = []
