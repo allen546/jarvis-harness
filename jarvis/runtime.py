@@ -8,7 +8,7 @@ from typing import Any, AsyncIterator, Callable
 
 from jarvis.config import SessionConfig
 from jarvis.events import AgentEvent
-from jarvis.hooks import ContextCompressionHook, JSONLHistoryHook, TurnHook
+from jarvis.hooks import BudgetGuardHook, ContextCompressionHook, JSONLHistoryHook, ToolApprovalHook, TurnHook
 from jarvis.models.base import BaseModelClient, Message, get_model_class
 from jarvis.tools import ToolRegistry
 
@@ -96,7 +96,12 @@ class AgentSession:
 
 
 def _default_hooks() -> list[TurnHook]:
-    hooks: list[TurnHook] = [JSONLHistoryHook(), ContextCompressionHook()]
+    hooks: list[TurnHook] = [
+        JSONLHistoryHook(),
+        ContextCompressionHook(),
+        BudgetGuardHook(),
+        ToolApprovalHook()
+    ]
     embedding_url = os.environ.get("EMBEDDING_URL", "")
     if embedding_url:
         from jarvis.memory_store import SemanticMemoryHook

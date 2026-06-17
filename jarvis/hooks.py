@@ -128,16 +128,63 @@ class ContextCompressionHook(NoopTurnHook):
             session.history = [summary_msg] + remaining
             
             # Rebuild the messages list that we return to the kernel loop
-            # Note: the kernel uses messages (which is built using history and system prompt).
-            # If the user's turn has a system prompt, kernel._with_system_prompt prepend it.
-            # We can update the messages to contain the new history (including summary).
             new_messages = list(session.history)
             if any(m.role == "system" for m in messages):
-                # If there's an active system prompt, preserve it at the very top.
+                # Preserve the active system prompt at the top, but skip summaries
+                # that are now in session.history to avoid duplication
                 sys_msgs = [m for m in messages if m.role == "system" and not m.content.startswith("[Summary of")]
                 new_messages = sys_msgs + new_messages
             
             return HookResult(messages=new_messages)
+        return HookResult()
+
+
+class BudgetGuardHook(NoopTurnHook):
+    __slots__ = ("_counts",)
+    
+    def __init__(self) -> None:
+        self._counts: dict[int, int] = {}
+        
+    async def before_model(self, ctx: object, messages: list[Message]) -> HookResult:
+        session = getattr(ctx, "session")
+        self._counts[id(session)] = 0
+        return HookResult()
+        
+    async def before_tool(self, ctx: object, tool_call: ToolCall) -> HookResult:
+        session = getattr(ctx, "session")
+        config = getattr(ctx, "config")
+        count = self._counts.get(id(session), 0)
+        limit = getattr(config, "max_consecutive_tools", 5)
+        if count >= limit:
+            return HookResult(stop=True, reason=f"Tool execution budget limit exceeded: max {limit} consecutive calls")
+        return HookResult()
+        
+    async def after_tool(self, ctx: object, tool_call: ToolCall, result: ToolResult) -> HookResult:
+        session = getattr(ctx, "session")
+        self._counts[id(session)] = self._counts.get(id(session), 0) + 1
+        return HookResult()
+
+
+class ToolApprovalHook(NoopTurnHook):
+    __slots__ = ()
+    
+    async def before_tool(self, ctx: object, tool_call: ToolCall) -> HookResult:
+        config = getattr(ctx, "config")
+        require_approval = getattr(config, "require_tool_approval", False)
+        if not require_approval:
+            return HookResult()
+            
+        handler = getattr(ctx, "approval_handler", None)
+        if handler is None:
+            return HookResult(skip_tool=True, reason="Tool approval required but no handler registered")
+            
+        import inspect
+        approved = handler(tool_call)
+        if inspect.isawaitable(approved):
+            approved = await approved
+            
+        if not approved:
+            return HookResult(skip_tool=True, reason="Tool call rejected by user")
         return HookResult()
 
 
