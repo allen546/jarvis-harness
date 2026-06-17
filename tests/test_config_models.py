@@ -40,3 +40,45 @@ def test_runtime_config_extensions() -> None:
     assert config.allowed_skills == ["git"]
     assert config.stream is False
 
+    # Assert default values
+    config_default = RuntimeConfig()
+    assert config_default.system_prompt is None
+    assert config_default.max_consecutive_tools == 5
+    assert config_default.require_tool_approval is False
+    assert config_default.allowed_skills == []
+    assert config_default.stream is True
+
+
+def test_context_from_config_propagation() -> None:
+    from jarvis.config import SessionConfig, ModelConfig, HarnessConfig
+    from jarvis.runtime import context_from_config
+    from jarvis.tools import ToolRegistry
+
+    # 1. Default propagation from a minimal SessionConfig yields stream=True in ctx.config.
+    config_default = SessionConfig(
+        model=ModelConfig(provider="openai", model_name="gpt-4o")
+    )
+    ctx_default = context_from_config(config_default, ToolRegistry())
+    assert ctx_default.config.stream is True
+    assert ctx_default.config.max_consecutive_tools == 5
+    assert ctx_default.config.require_tool_approval is False
+    assert ctx_default.config.allowed_skills == []
+
+    # 2. Explicit propagation (e.g. loading HarnessConfig(stream=False)) yields stream=False in ctx.config.
+    config_explicit = SessionConfig(
+        model=ModelConfig(provider="openai", model_name="gpt-4o"),
+        harness=HarnessConfig(
+            system_prompt="custom prompt",
+            max_consecutive_tools=12,
+            require_tool_approval=True,
+            allowed_skills=["git", "cmd"],
+            stream=False
+        )
+    )
+    ctx_explicit = context_from_config(config_explicit, ToolRegistry())
+    assert ctx_explicit.config.system_prompt == "custom prompt"
+    assert ctx_explicit.config.max_consecutive_tools == 12
+    assert ctx_explicit.config.require_tool_approval is True
+    assert ctx_explicit.config.allowed_skills == ["git", "cmd"]
+    assert ctx_explicit.config.stream is False
+
