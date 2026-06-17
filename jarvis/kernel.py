@@ -22,7 +22,31 @@ class AgentKernel:
                     yield ErrorEvent(session_id=ctx.session.id, message=hook_result.reason or "turn stopped")
                     return
 
-                response = await ctx.model.generate(messages, ctx.tools.schemas())
+                response = None
+                if getattr(ctx.config, "stream", True) and hasattr(ctx.model, "generate_stream"):
+                    try:
+                        accumulated_content = ""
+                        accumulated_tool_calls = []
+                        stream = ctx.model.generate_stream(messages, ctx.tools.schemas())
+                        if hasattr(stream, "__aiter__"):
+                            async for chunk in stream:
+                                if chunk.content:
+                                    accumulated_content += chunk.content
+                                    yield TextDeltaEvent(session_id=ctx.session.id, content=chunk.content)
+                                if chunk.tool_calls:
+                                    accumulated_tool_calls.extend(chunk.tool_calls)
+                            response = ModelResponse(
+                                content=accumulated_content if accumulated_content else None,
+                                tool_calls=accumulated_tool_calls,
+                                raw_response=None,
+                            )
+                        else:
+                            await stream
+                    except NotImplementedError:
+                        pass
+
+                if response is None:
+                    response = await ctx.model.generate(messages, ctx.tools.schemas())
                 after_model = await self._run_after_model(ctx, response)
                 if after_model.stop:
                     yield ErrorEvent(session_id=ctx.session.id, message=after_model.reason or "turn stopped")
@@ -76,8 +100,8 @@ class AgentKernel:
         return messages
 
     def _without_system_prompt(self, messages: list[Message], ctx: AgentContext) -> list[Message]:
-        if ctx.config.system_prompt:
-            return [m for m in messages if not (m.role == "system" and m.content == ctx.config.system_prompt)]
+        if messages and messages[0].role == "system":
+            return messages[1:]
         return messages
 
     async def _run_before_model(self, ctx: AgentContext, messages: list[Message]) -> HookResult:

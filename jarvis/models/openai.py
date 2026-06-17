@@ -124,12 +124,51 @@ class OpenAIClient(BaseModelClient):
             
         if self.max_tokens is not None:
             kwargs["max_tokens"] = self.max_tokens
+        if tools:
+            kwargs["tools"] = [{"type": "function", "function": t} for t in tools]
         if self.extra_params:
             extra_body = {k: v for k, v in self.extra_params.items() if k not in ("temperature", "max_tokens", "tools", "model", "messages", "stream")}
             if extra_body:
                 kwargs["extra_body"] = extra_body
 
         response = await client.chat.completions.create(**kwargs)
+        tool_calls_builder = {}
         async for chunk in response:
-            if chunk.choices and chunk.choices[0].delta.content:
-                yield ModelResponse(content=chunk.choices[0].delta.content, tool_calls=[], raw_response=chunk)
+            if not chunk.choices:
+                continue
+            delta = chunk.choices[0].delta
+            if delta.content:
+                yield ModelResponse(content=delta.content, tool_calls=[], raw_response=chunk)
+            
+            if delta.tool_calls:
+                for tc in delta.tool_calls:
+                    index = tc.index
+                    if index not in tool_calls_builder:
+                        tool_calls_builder[index] = {
+                            "id": tc.id or "",
+                            "name": (tc.function.name if tc.function else "") or "",
+                            "arguments": (tc.function.arguments if tc.function else "") or ""
+                        }
+                    else:
+                        if tc.id:
+                            tool_calls_builder[index]["id"] = tc.id
+                        if tc.function:
+                            if tc.function.name:
+                                tool_calls_builder[index]["name"] = tc.function.name
+                            if tc.function.arguments:
+                                tool_calls_builder[index]["arguments"] += tc.function.arguments
+
+        tool_calls = []
+        for index in sorted(tool_calls_builder.keys()):
+            tc_data = tool_calls_builder[index]
+            try:
+                args = json.loads(tc_data["arguments"]) if tc_data["arguments"] else {}
+            except json.JSONDecodeError:
+                args = {}
+            tool_calls.append(ToolCall(
+                call_id=tc_data["id"],
+                tool_name=tc_data["name"],
+                arguments=args
+            ))
+        if tool_calls:
+            yield ModelResponse(content=None, tool_calls=tool_calls, raw_response=None)

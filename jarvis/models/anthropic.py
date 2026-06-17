@@ -71,6 +71,7 @@ class AnthropicClient(BaseModelClient):
         return ModelResponse(content=content_text, tool_calls=tool_calls, raw_response=response)
 
     async def generate_stream(self, messages: list[Message], tools: list[Any]) -> AsyncGenerator[ModelResponse, None]:
+        import json
         client = await self._get_client()
         anthropic_msgs = [{"role": "assistant" if m.role == "assistant" else "user", "content": m.content} for m in messages if m.role != "system"]
         system_prompt = next((m.content for m in messages if m.role == "system"), None)
@@ -83,7 +84,41 @@ class AnthropicClient(BaseModelClient):
         }
         if system_prompt:
             kwargs["system"] = system_prompt
+        if tools:
+            kwargs["tools"] = tools
 
+        tool_calls_builder = {}
         async with client.messages.stream(**kwargs) as stream:
-            async for text in stream.text_stream:
-                yield ModelResponse(content=text, tool_calls=[], raw_response=None)
+            async for event in stream:
+                if event.type == "content_block_start":
+                    index = event.index
+                    block = event.content_block
+                    if block.type == "tool_use":
+                        tool_calls_builder[index] = {
+                            "id": block.id,
+                            "name": block.name,
+                            "arguments_str": ""
+                        }
+                elif event.type == "content_block_delta":
+                    index = event.index
+                    delta = event.delta
+                    if delta.type == "text_delta":
+                        yield ModelResponse(content=delta.text, tool_calls=[], raw_response=event)
+                    elif delta.type == "input_json_delta":
+                        if index in tool_calls_builder:
+                            tool_calls_builder[index]["arguments_str"] += delta.partial_json
+
+        tool_calls = []
+        for index in sorted(tool_calls_builder.keys()):
+            tc_data = tool_calls_builder[index]
+            try:
+                args = json.loads(tc_data["arguments_str"]) if tc_data["arguments_str"] else {}
+            except json.JSONDecodeError:
+                args = {}
+            tool_calls.append(ToolCall(
+                call_id=tc_data["id"],
+                tool_name=tc_data["name"],
+                arguments=args
+            ))
+        if tool_calls:
+            yield ModelResponse(content=None, tool_calls=tool_calls, raw_response=None)
