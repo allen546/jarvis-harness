@@ -1,20 +1,31 @@
 from __future__ import annotations
 
-import json
 from pathlib import Path
-from typing import Any, AsyncGenerator
 
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
 
 from jarvis.config import SessionConfig, load_session_config
 from jarvis.events import event_to_dict
 from jarvis.kernel import AgentKernel
-from jarvis.models.base import Message, TurnRequest
+from jarvis.models.base import Message
 from jarvis.runtime import AgentSession, context_from_config
 from jarvis.tools import ToolRegistry, builtin_tools
+
+
 app = FastAPI(title="Jarvis Gateway")
-app.state.sessions = {}
+app.state.sessions: dict[str, AgentSession] = {}
+
+
+class TurnRequest(BaseModel):
+    content: str
+
+
+class TurnResponse(BaseModel):
+    session_id: str
+    content: str
+    tool_calls: list[dict] = []
+
 
 def build_session(config: SessionConfig) -> AgentSession:
     ctx = context_from_config(config, tools=ToolRegistry(builtin_tools(Path.cwd())))
@@ -22,7 +33,7 @@ def build_session(config: SessionConfig) -> AgentSession:
 
 
 def get_or_create_session(session_id: str) -> AgentSession:
-    sessions: dict[str, AgentSession] = app.state.sessions
+    sessions = app.state.sessions
     if session_id not in sessions:
         config = load_session_config(session_id)
         if config.session_id == "default":
@@ -31,15 +42,8 @@ def get_or_create_session(session_id: str) -> AgentSession:
     return sessions[session_id]
 
 
-def sse_line(event: dict[str, Any]) -> str:
-    name = str(event.pop("event"))
-    return f"event: {name}\ndata: {json.dumps(event)}\n\n"
-
-
-@app.post("/sessions/{session_id}/turns")
-async def execute_session_turn(session_id: str, request: TurnRequest) -> StreamingResponse:
-    if request.channel.lower() != "sse":
-        raise HTTPException(status_code=400, detail="Only sse channel is implemented in the microkernel gateway")
+@app.post("/sessions/{session_id}/turns", response_model=TurnResponse)
+async def execute_session_turn(session_id: str, request: TurnRequest) -> TurnResponse:
     try:
         session = get_or_create_session(session_id)
     except ValueError as exc:
@@ -47,11 +51,16 @@ async def execute_session_turn(session_id: str, request: TurnRequest) -> Streami
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Failed to create session: {exc}") from exc
 
-    async def stream() -> AsyncGenerator[str, None]:
-        async for event in session.submit(Message(role="user", content=request.content, metadata={"channel": request.channel})):
-            yield sse_line(event_to_dict(event))
+    content = ""
+    tool_calls = []
+    async for event in session.submit(Message(role="user", content=request.content)):
+        data = event_to_dict(event)
+        if data.get("event") == "message":
+            content = data["message"]["content"]
+        elif data.get("event") == "tool_call":
+            tool_calls.append(data["tool_call"])
 
-    return StreamingResponse(stream(), media_type="text/event-stream")
+    return TurnResponse(session_id=session_id, content=content, tool_calls=tool_calls)
 
 
 def main() -> None:

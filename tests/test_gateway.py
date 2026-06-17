@@ -17,7 +17,7 @@ class FakeModel:
 
 
 @pytest.mark.asyncio
-async def test_gateway_streams_kernel_events(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_gateway_returns_json_response(monkeypatch: pytest.MonkeyPatch) -> None:
     from jarvis.config import ModelConfig, SessionConfig
 
     monkeypatch.setattr("jarvis.runtime.get_model_class", lambda provider: FakeModel)
@@ -25,8 +25,9 @@ async def test_gateway_streams_kernel_events(monkeypatch: pytest.MonkeyPatch) ->
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        response = await client.post("/sessions/s1/turns", json={"content": "hi", "channel": "sse"})
+        response = await client.post("/sessions/s1/turns", json={"content": "hi"})
 
     assert response.status_code == 200
-    assert "event: message" in response.text
-    assert "hello gateway" in response.text
+    data = response.json()
+    assert data["content"] == "hello gateway"
+    assert data["session_id"] == "s1"

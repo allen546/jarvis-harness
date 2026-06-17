@@ -109,7 +109,7 @@ async def test_compression_hook_integration_with_kernel():
     
     events = [event async for event in kernel.run_turn(ctx, user_msg)]
     
-    # Verify that the summary system message is preserved in history at the end of the turn
+    # Verify that the summary message is preserved in history at the end of the turn
     assert len(state.history) == 4
     assert state.history[0].role == "system"
     assert "SUMMARY_OF_CHAT" in state.history[0].content

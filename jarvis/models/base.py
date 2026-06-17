@@ -125,8 +125,4 @@ class BaseModelClient:
             yield  # type: ignore[misc]
 
 
-class TurnRequest(BaseModel):
-    content: str
-    channel: str
-    channel_params: Optional[dict[str, Any]] = None
 
