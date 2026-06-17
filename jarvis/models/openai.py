@@ -3,6 +3,7 @@ import json
 import os
 from typing import TYPE_CHECKING, Any, AsyncGenerator, Optional
 from jarvis.models.base import BaseModelClient, Message, ModelResponse, ToolCall, register_model
+from jarvis.retry import retry_with_backoff
 
 if TYPE_CHECKING:
     from jarvis.config import SessionConfig
@@ -49,6 +50,7 @@ class OpenAIClient(BaseModelClient):
             self._client = openai.AsyncOpenAI(**kwargs)
         return self._client
 
+    @retry_with_backoff(max_retries=3, base_delay=1.0)
     async def generate(self, messages: list[Message], tools: list[Any]) -> ModelResponse:
         client = await self._get_client()
         openai_msgs: list[dict[str, Any]] = []
@@ -131,7 +133,10 @@ class OpenAIClient(BaseModelClient):
             if extra_body:
                 kwargs["extra_body"] = extra_body
 
-        response = await client.chat.completions.create(**kwargs)
+        @retry_with_backoff(max_retries=3, base_delay=1.0)
+        async def _get_stream():
+            return await client.chat.completions.create(**kwargs)
+        response = await _get_stream()
         tool_calls_builder = {}
         async for chunk in response:
             if not chunk.choices:

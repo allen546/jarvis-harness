@@ -2,6 +2,7 @@ import importlib
 import os
 from typing import TYPE_CHECKING, Any, AsyncGenerator, Optional
 from jarvis.models.base import BaseModelClient, Message, ModelResponse, ToolCall, register_model
+from jarvis.retry import retry_with_backoff
 
 if TYPE_CHECKING:
     from jarvis.config import SessionConfig
@@ -44,6 +45,7 @@ class AnthropicClient(BaseModelClient):
             self._client = anthropic.AsyncAnthropic(**kwargs)
         return self._client
 
+    @retry_with_backoff(max_retries=3, base_delay=1.0)
     async def generate(self, messages: list[Message], tools: list[Any]) -> ModelResponse:
         client = await self._get_client()
         anthropic_msgs: list[dict[str, Any]] = []
@@ -88,7 +90,13 @@ class AnthropicClient(BaseModelClient):
             kwargs["tools"] = tools
 
         tool_calls_builder = {}
-        async with client.messages.stream(**kwargs) as stream:
+        @retry_with_backoff(max_retries=3, base_delay=1.0)
+        async def _enter_stream():
+            mgr = client.messages.stream(**kwargs)
+            return await mgr.__aenter__()
+
+        stream = await _enter_stream()
+        try:
             async for event in stream:
                 if event.type == "content_block_start":
                     index = event.index
@@ -107,6 +115,8 @@ class AnthropicClient(BaseModelClient):
                     elif delta.type == "input_json_delta":
                         if index in tool_calls_builder:
                             tool_calls_builder[index]["arguments_str"] += delta.partial_json
+        finally:
+            await stream.__aexit__(None, None, None)
 
         tool_calls = []
         for index in sorted(tool_calls_builder.keys()):
