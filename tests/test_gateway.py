@@ -3,8 +3,10 @@ from typing import Any
 import pytest
 from httpx import ASGITransport, AsyncClient
 
+from jarvis.config import ModelConfig, SessionConfig
 from jarvis.models.base import Message, ModelResponse
-from main import app
+from jarvis.sessions import SessionManager
+from main import app, _manager
 
 
 class FakeModel:
@@ -18,10 +20,18 @@ class FakeModel:
 
 @pytest.mark.asyncio
 async def test_gateway_returns_json_response(monkeypatch: pytest.MonkeyPatch) -> None:
-    from jarvis.config import ModelConfig, SessionConfig
+    import main
+
+    fake_config = SessionConfig(
+        session_id="s1",
+        model=ModelConfig(provider="fake", model_name="fake"),
+    )
 
     monkeypatch.setattr("jarvis.runtime.get_model_class", lambda provider: FakeModel)
-    monkeypatch.setattr("main.load_session_config", lambda session_id: SessionConfig(session_id=session_id, model=ModelConfig(provider="fake", model_name="fake")))
+    monkeypatch.setattr("jarvis.sessions.load_session_config", lambda session_id, **kw: fake_config)
+
+    manager = SessionManager()
+    main._manager = manager
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:

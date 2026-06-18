@@ -22,6 +22,18 @@ class RuntimeConfig:
     require_tool_approval: bool = False
     allowed_skills: list[str] = field(default_factory=list)
     stream: bool = True
+    # safety hooks
+    max_repeated_tool_calls: int = 3
+    repeated_content_threshold: float = 0.8
+    repeated_content_window: int = 3
+    # embedding
+    embedding_enabled: bool = False
+    embedding_url: str = ""
+    embedding_dimensions: int = 256
+    # heartbeat
+    heartbeat_enabled: bool = False
+    heartbeat_interval_secs: int = 300
+    heartbeat_workspace: str = "."
 
 
 @dataclass(slots=True)
@@ -41,16 +53,19 @@ class AgentContext:
     emit_event: Callable[[AgentEvent], None] | None = None
     mcp_manager: Any | None = field(default=None, compare=False)
     approval_handler: Callable[[ToolCall], bool | Awaitable[bool]] | None = field(default=None, compare=False)
+    proxy_env: dict[str, str] = field(default_factory=dict)
 
 
 class AgentSession:
-    def __init__(self, ctx: AgentContext, kernel: object) -> None:
+    def __init__(self, ctx: AgentContext, kernel: object, proxy_env: dict[str, str] | None = None) -> None:
         self.ctx = ctx
         self.kernel = kernel
         self._lock = asyncio.Lock()
         self._mcp_initialized = False
         self._mcp_tool_names: list[str] = []
         self._skill_tool_names: list[str] = []
+        if proxy_env:
+            self.ctx.proxy_env = proxy_env
 
     async def submit(self, message: Message) -> AsyncIterator[AgentEvent]:
         async with self._lock:
@@ -66,7 +81,7 @@ class AgentSession:
                                 self._skill_tool_names.append(t_name)
 
                 from jarvis.mcp import McpClientManager
-                manager = McpClientManager()
+                manager = McpClientManager(proxy_env=self.ctx.proxy_env)
                 mcp_tools = await manager.initialize()
                 for t in mcp_tools:
                     self.ctx.tools.register(t)
@@ -135,19 +150,43 @@ class AgentSession:
             self.ctx.hooks = [h for h in self.ctx.hooks if not isinstance(h, SkillInstructionsHook)]
 
 
-def _default_hooks() -> list[TurnHook]:
+def _default_hooks(config: SessionConfig | None = None) -> list[TurnHook]:
+    from jarvis.hooks import RepeatedLoopHook, RepeatedContentHook
+
+    # Read safety params from config, fall back to defaults
+    max_repeats = 3
+    content_threshold = 0.8
+    content_window = 3
+    if config is not None:
+        max_repeats = config.harness.max_repeated_tool_calls
+        content_threshold = config.harness.repeated_content_threshold
+        content_window = config.harness.repeated_content_window
+
     hooks: list[TurnHook] = [
         JSONLHistoryHook(),
         ContextCompressionHook(),
         BudgetGuardHook(),
-        ToolApprovalHook()
+        ToolApprovalHook(),
+        RepeatedLoopHook(max_repeats=max_repeats),
+        RepeatedContentHook(threshold=content_threshold, window=content_window),
     ]
-    embedding_url = os.environ.get("EMBEDDING_URL", "")
-    if embedding_url:
+
+    # Embedding: config URL > env var > disabled
+    embedding_url = ""
+    embedding_enabled = False
+    embedding_dims = 256
+    if config is not None:
+        embedding_url = config.harness.embedding.url
+        embedding_enabled = config.harness.embedding.enabled
+        embedding_dims = config.harness.embedding.dimensions
+    if not embedding_url:
+        embedding_url = os.environ.get("EMBEDDING_URL", "")
+    if embedding_url or embedding_enabled:
         from jarvis.memory_store import SemanticMemoryHook
         hooks.append(SemanticMemoryHook(
             storage_dir="storage",
-            embedding_url=embedding_url,
+            embedding_url=embedding_url or None,
+            embedding_dimensions=embedding_dims,
         ))
     return hooks
 
@@ -155,16 +194,26 @@ def _default_hooks() -> list[TurnHook]:
 def context_from_config(config: SessionConfig, tools: ToolRegistry, hooks: list[TurnHook] | None = None) -> AgentContext:
     provider = config.model.provider.lower()
     model_cls = get_model_class(provider)
+    h = config.harness
     return AgentContext(
         config=RuntimeConfig(
-            system_prompt=config.harness.system_prompt,
-            max_consecutive_tools=config.harness.max_consecutive_tools,
-            require_tool_approval=config.harness.require_tool_approval,
-            allowed_skills=config.harness.allowed_skills,
-            stream=config.harness.stream,
+            system_prompt=h.system_prompt,
+            max_consecutive_tools=h.max_consecutive_tools,
+            require_tool_approval=h.require_tool_approval,
+            allowed_skills=h.allowed_skills,
+            stream=h.stream,
+            max_repeated_tool_calls=h.max_repeated_tool_calls,
+            repeated_content_threshold=h.repeated_content_threshold,
+            repeated_content_window=h.repeated_content_window,
+            embedding_enabled=h.embedding.enabled,
+            embedding_url=h.embedding.url,
+            embedding_dimensions=h.embedding.dimensions,
+            heartbeat_enabled=h.heartbeat.enabled,
+            heartbeat_interval_secs=h.heartbeat.interval_secs,
+            heartbeat_workspace=h.heartbeat.workspace,
         ),
         session=SessionState(id=config.session_id),
         model=model_cls.from_cfg(config),
         tools=tools,
-        hooks=hooks if hooks is not None else _default_hooks(),
+        hooks=hooks if hooks is not None else _default_hooks(config),
     )

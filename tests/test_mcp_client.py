@@ -70,7 +70,7 @@ async def test_agent_session_lazy_init_and_close(monkeypatch: pytest.MonkeyPatch
     close_called = 0
     
     class MockMcpClientManager:
-        def __init__(self, config_path="config/mcp_settings.json"):
+        def __init__(self, config_path="config/mcp_settings.json", proxy_env=None):
             pass
         async def initialize(self):
             nonlocal initialized_called

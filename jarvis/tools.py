@@ -84,6 +84,15 @@ def builtin_tools(root: Path | str = ".") -> list[Tool]:
     def read_file(args: dict[str, Any]) -> str:
         target = _resolve(base, str(args["path"]))
         return target.read_text(encoding="utf-8")
+    def write_file(args: dict[str, Any]) -> str:
+        target = _resolve(base, str(args["path"]))
+        target.parent.mkdir(parents=True, exist_ok=True)
+        content = str(args["content"])
+        max_chars = 1_048_576  # 1 MB text limit
+        if len(content) > max_chars:
+            return f"Error: content exceeds {max_chars} char limit ({len(content)} chars)"
+        target.write_text(content, encoding="utf-8")
+        return f"Wrote {len(content)} chars to {target.relative_to(base.resolve())}"
 
     def search_text(args: dict[str, Any]) -> str:
         query = str(args["query"])
@@ -107,6 +116,14 @@ def builtin_tools(root: Path | str = ".") -> list[Tool]:
         return output.decode("utf-8", errors="replace")
 
     object_params = {"type": "object", "properties": {}, "additionalProperties": True}
+    write_params = {
+        "type": "object",
+        "properties": {
+            "path": {"type": "string", "description": "Relative workspace path to write."},
+            "content": {"type": "string", "description": "File content to write."},
+        },
+        "required": ["path", "content"],
+    }
     from jarvis.memory_store import search_semantic_memory_tool, purge_semantic_memory_tool, store_semantic_memory_tool
     search_params = {
         "type": "object",
@@ -223,6 +240,7 @@ def builtin_tools(root: Path | str = ".") -> list[Tool]:
     return [
         Tool("ls", "List files under a workspace path.", object_params, list_files),
         Tool("read", "Read a UTF-8 text file under the workspace.", object_params, read_file),
+        Tool("write", "Create or overwrite a UTF-8 file under the workspace.", write_params, write_file),
         Tool("grep", "Search for text under the workspace.", object_params, search_text),
         Tool("Bash", "Run a shell command. Policy hooks decide whether it is allowed.", object_params, run_command),
         Tool("memory_search", "Search semantic memory for previously stored facts and history.", search_params, search_semantic_memory_tool),

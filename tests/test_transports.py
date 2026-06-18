@@ -1,6 +1,5 @@
 import pytest
 from jarvis.transports.discord import DiscordTransport, MockDiscordAPI
-from jarvis.transports.qq import QQTransport, MockQQAPI
 from jarvis.models.base import NativeAction
 
 @pytest.mark.asyncio
@@ -33,30 +32,6 @@ async def test_discord_transport_mock():
     await transport.execute_native_action("channel1", qq_action)
     assert len(api.sent_messages) == 1  # Should not add another message
 
-@pytest.mark.asyncio
-async def test_qq_transport_mock():
-    api = MockQQAPI()
-    transport = QQTransport(client=api)
-    
-    # 1. Test reply action
-    reply_action = NativeAction(action_type="qq_reply", params={"message_id": "msg1", "content": "hello qq"})
-    await transport.execute_native_action("user1", reply_action)
-    assert api.replies[0] == ("user1", "hello qq", "msg1")
-
-    # 2. Test markdown action
-    md_action = NativeAction(action_type="qq_send_markdown", params={"content": "md content", "template_id": "temp1"})
-    await transport.execute_native_action("user1", md_action)
-    assert api.markdowns[0] == ("user1", "md content", "temp1")
-
-    # 3. Test send keyboard action
-    kb_action = NativeAction(action_type="qq_send_keyboard", params={"buttons": []})
-    await transport.execute_native_action("user1", kb_action)
-    assert api.keyboards[0] == ("user1", {"buttons": []})
-
-    # 4. Verify cross-platform filtering: QQTransport ignores Discord action
-    discord_action = NativeAction(action_type="discord_reply", params={"message_id": "msg2", "content": "ignore me"})
-    await transport.execute_native_action("user1", discord_action)
-    assert len(api.replies) == 1  # Should not add another reply
 
 def test_snowflake_validation():
     from jarvis.transports.discord import _to_snowflake

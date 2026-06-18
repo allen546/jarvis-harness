@@ -21,3 +21,4 @@ htmlcov/
 # Local history files
 history*.jsonl
 *.jsonl
+storage/

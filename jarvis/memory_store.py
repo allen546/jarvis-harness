@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import json
 import math
+import zlib
 import uuid
 import inspect
 import asyncio
@@ -29,6 +30,35 @@ def cosine_similarity(v1: list[float], v2: list[float]) -> float:
     return dot_product / (norm_v1 * norm_v2)
 
 
+class _CharNgramEncoder:
+    """Local char n-gram TF-IDF encoder. No external dependencies."""
+
+    def __init__(self, dimensions: int = 256, n: int = 3) -> None:
+        self.dimensions = dimensions
+        self.n = n
+
+    def encode(self, text: str) -> list[float]:
+        lower = text.lower()
+        # Count char n-grams
+        counts: dict[str, int] = {}
+        for i in range(max(0, len(lower) - self.n + 1)):
+            gram = lower[i : i + self.n]
+            counts[gram] = counts.get(gram, 0) + 1
+        if not counts:
+            return [0.0] * self.dimensions
+        # Hash-based dimensionality reduction: map each n-gram to a bucket
+        vec = [0.0] * self.dimensions
+        total = sum(counts.values())
+        for gram, count in counts.items():
+            bucket = zlib.crc32(gram.encode()) % self.dimensions
+            vec[bucket] += count / total
+        # L2 normalize
+        norm = math.sqrt(sum(x * x for x in vec))
+        if norm > 0:
+            vec = [x / norm for x in vec]
+        return vec
+
+
 class SemanticMemoryStore:
     _locks: dict[str, asyncio.Lock] = {}
 
@@ -38,10 +68,20 @@ class SemanticMemoryStore:
             cls._locks[session_id] = asyncio.Lock()
         return cls._locks[session_id]
 
-    def __init__(self, storage_dir: str, embedding_url: str, http_client: Any | None = None) -> None:
+    def __init__(
+        self,
+        storage_dir: str,
+        embedding_url: str | None = None,
+        http_client: Any | None = None,
+        embedding_dimensions: int = 256,
+    ) -> None:
         self.storage_dir = storage_dir
         self.embedding_url = embedding_url
         self.http_client = http_client
+        self._local_encoder: _CharNgramEncoder | None = (
+            _CharNgramEncoder(dimensions=embedding_dimensions) if not embedding_url else None
+        )
+
 
     def _get_file_path(self, session_id: str) -> Path:
         return Path(self.storage_dir) / "sessions" / session_id / "semantic_memory.json"
@@ -65,6 +105,8 @@ class SemanticMemoryStore:
         os.replace(tmp_path, path)
 
     async def _get_embedding(self, text: str) -> list[float]:
+        if self._local_encoder is not None:
+            return self._local_encoder.encode(text)
         json_data = {"text": text}
         if self.http_client is None:
             import httpx
@@ -140,12 +182,19 @@ class SemanticMemoryStore:
 
 
 class SemanticMemoryHook(NoopTurnHook):
-    __slots__ = ("storage_dir", "embedding_url", "http_client")
+    __slots__ = ("storage_dir", "embedding_url", "http_client", "embedding_dimensions")
 
-    def __init__(self, storage_dir: str, embedding_url: str, http_client: Any | None = None) -> None:
+    def __init__(
+        self,
+        storage_dir: str,
+        embedding_url: str | None = None,
+        http_client: Any | None = None,
+        embedding_dimensions: int = 256,
+    ) -> None:
         self.storage_dir = storage_dir
         self.embedding_url = embedding_url
         self.http_client = http_client
+        self.embedding_dimensions = embedding_dimensions
 
     async def before_model(self, ctx: object, messages: list[Message]) -> HookResult:
         from jarvis.runtime import AgentContext, current_context
@@ -213,6 +262,7 @@ class SemanticMemoryHook(NoopTurnHook):
                     storage_dir=self.storage_dir,
                     embedding_url=self.embedding_url,
                     http_client=self.http_client,
+                    embedding_dimensions=self.embedding_dimensions,
                 )
                 for fact in facts:
                     await store.add_memory(session.id, fact, ["truths"])
@@ -225,8 +275,9 @@ class SemanticMemoryHook(NoopTurnHook):
 
 def _get_store_from_context(ctx: Any) -> SemanticMemoryStore:
     storage_dir = "storage"
-    embedding_url = os.environ.get("EMBEDDING_URL", "http://localhost:8000/embeddings")
+    embedding_url: str | None = os.environ.get("EMBEDDING_URL") or None
     http_client = None
+    embedding_dimensions = 256
 
     if ctx and hasattr(ctx, "hooks"):
         for hook in ctx.hooks:
@@ -234,12 +285,14 @@ def _get_store_from_context(ctx: Any) -> SemanticMemoryStore:
                 storage_dir = getattr(hook, "storage_dir", storage_dir)
                 embedding_url = getattr(hook, "embedding_url", embedding_url)
                 http_client = getattr(hook, "http_client", http_client)
+                embedding_dimensions = getattr(hook, "embedding_dimensions", embedding_dimensions)
                 break
 
     return SemanticMemoryStore(
         storage_dir=storage_dir,
         embedding_url=embedding_url,
         http_client=http_client,
+        embedding_dimensions=embedding_dimensions,
     )
 
 

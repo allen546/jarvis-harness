@@ -199,6 +199,91 @@ class ToolApprovalHook(NoopTurnHook):
         return HookResult()
 
 
+class RepeatedLoopHook(NoopTurnHook):
+    """Stop the turn when the agent calls the same tool with identical arguments repeatedly."""
+    __slots__ = ("_consecutive", "_last_keys", "_max_repeats")
+
+    def __init__(self, max_repeats: int = 3) -> None:
+        self._max_repeats = max_repeats
+        self._consecutive: dict[str, int] = {}  # session_id -> count of same call
+        self._last_keys: dict[str, str] = {}    # session_id -> last tool call key
+
+    async def after_tool(self, ctx: object, tool_call: ToolCall, result: ToolResult) -> HookResult:
+        session = getattr(ctx, "session")
+        key = f"{tool_call.tool_name}:{json.dumps(tool_call.arguments, sort_keys=True)}"
+        prev_key = self._last_keys.get(session.id)
+        if key == prev_key:
+            count = self._consecutive.get(session.id, 0) + 1
+            self._consecutive[session.id] = count
+            if count >= self._max_repeats:
+                # Clean up so next turn starts fresh
+                self._consecutive.pop(session.id, None)
+                self._last_keys.pop(session.id, None)
+                return HookResult(
+                    stop=True,
+                    reason=f"Repeated tool loop detected: {tool_call.tool_name} called {count + 1} times with identical arguments",
+                )
+        else:
+            self._consecutive[session.id] = 1
+        self._last_keys[session.id] = key
+        return HookResult()
+
+    async def after_turn(self, ctx: object, message: Message) -> HookResult:
+        session = getattr(ctx, "session")
+        self._consecutive.pop(session.id, None)
+        self._last_keys.pop(session.id, None)
+        return HookResult()
+
+
+def _char_ngrams(text: str, n: int = 3) -> dict[str, int]:
+    """Count character n-grams in text."""
+    counts: dict[str, int] = {}
+    lower = text.lower()
+    for i in range(len(lower) - n + 1):
+        gram = lower[i : i + n]
+        counts[gram] = counts.get(gram, 0) + 1
+    return counts
+
+
+def _jaccard_ngrams(a: str, b: str, n: int = 3) -> float:
+    """Jaccard similarity of character n-gram sets. Returns 1.0 for identical strings."""
+    if a == b:
+        return 1.0
+    grams_a = set(_char_ngrams(a, n).keys())
+    grams_b = set(_char_ngrams(b, n).keys())
+    if not grams_a or not grams_b:
+        return 0.0
+    return len(grams_a & grams_b) / len(grams_a | grams_b)
+
+
+class RepeatedContentHook(NoopTurnHook):
+    """Stop the turn when the assistant generates near-identical content repeatedly."""
+    __slots__ = ("_threshold", "_window", "_recent")
+
+    def __init__(self, threshold: float = 0.8, window: int = 3) -> None:
+        self._threshold = threshold
+        self._window = window
+        self._recent: dict[str, list[str]] = {}  # session_id -> recent assistant contents
+
+    async def after_turn(self, ctx: object, message: Message) -> HookResult:
+        session = getattr(ctx, "session")
+        content = message.content or ""
+        if not content:
+            return HookResult()
+        recent = self._recent.setdefault(session.id, [])
+        # Evict oldest before checking, so only the sliding window is compared
+        if len(recent) >= self._window:
+            recent.pop(0)
+        for prev in recent:
+            if _jaccard_ngrams(content, prev) >= self._threshold:
+                return HookResult(
+                    stop=True,
+                    reason=f"Repeated content detected (similarity >= {self._threshold})",
+                )
+        recent.append(content)
+        return HookResult()
+
+
 def __getattr__(name: str):
     if name == "SemanticMemoryHook":
         from jarvis.memory_store import SemanticMemoryHook
