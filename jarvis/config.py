@@ -42,6 +42,7 @@ class HeartbeatConfig(BaseModel):
 
 class HarnessConfig(BaseModel):
     system_prompt: Optional[str] = None
+    system_prompt_file: Optional[str] = None
     max_consecutive_tools: int = 5
     require_tool_approval: bool = False
     skills_dirs: list[str] = Field(default_factory=lambda: ["skills/"])

@@ -16,20 +16,28 @@ from jarvis.tools import Tool, ToolRegistry
 
 current_context: ContextVar[AgentContext | None] = ContextVar("current_context", default=None)
 
-def render_system_prompt(template: str | None, root: str = ".") -> str | None:
+def render_system_prompt(template: str | None, root: str = ".", template_file: str | None = None) -> str | None:
     """Render a Jinja2 system prompt template with live context.
+
+    If template_file is given, reads the template from that path (relative to root).
+    Otherwise uses the inline template string.
 
     Available variables:
         skills_dirs  — list of configured skill directory names
         mcp_servers  — list of MCP server name strings from mcp_settings.json
     """
-    if not template:
-        return template
     from pathlib import Path as _P
     from jinja2 import Environment, BaseLoader
+    base = _P(root)
+    # Resolve template source
+    if template_file:
+        tpl_path = base / template_file
+        if tpl_path.exists():
+            template = tpl_path.read_text(encoding="utf-8")
+    if not template:
+        return template
     env = Environment(loader=BaseLoader(), autoescape=False)
     # Discover skill directories
-    base = _P(root)
     skills_dirs = [d for d in (base / "skills").iterdir() if d.is_dir()] if (base / "skills").exists() else []
     # Discover MCP servers from config
     mcp_servers: list[str] = []
@@ -346,7 +354,7 @@ def context_from_config(config: SessionConfig, tools: ToolRegistry, hooks: list[
     h = config.harness
     return AgentContext(
         config=RuntimeConfig(
-            system_prompt=render_system_prompt(h.system_prompt, root),
+            system_prompt=render_system_prompt(h.system_prompt, root, template_file=h.system_prompt_file),
             max_consecutive_tools=h.max_consecutive_tools,
             require_tool_approval=h.require_tool_approval,
             skills_dirs=h.skills_dirs,
