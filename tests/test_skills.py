@@ -37,7 +37,6 @@ async def test_list_skills(tmp_path: Path) -> None:
         parsed = json.loads(result)
         assert len(parsed) == 1
         assert parsed[0]["name"] == "mock_git"
-        assert parsed[0]["uri"] == "skill://mock_git"
         assert "Mock git" in parsed[0]["description"]
     finally:
         current_context.reset(token)

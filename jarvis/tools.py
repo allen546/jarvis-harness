@@ -340,7 +340,7 @@ def builtin_tools(root: Path | str = ".") -> list[Tool]:
                         pass
                 name = entry.name
                 if name not in seen:
-                    skills.append({"name": name, "description": str(desc), "uri": f"skill://{name}"})
+                    skills.append({"name": name, "description": str(desc)})
                     seen.add(name)
         import json as _json
         return _json.dumps(skills)
@@ -491,7 +491,7 @@ def builtin_tools(root: Path | str = ".") -> list[Tool]:
         Tool("memory_distill_now", "Force-distill undistilled session messages into semantic memory.", distill_now_params, distill_now_tool),
         Tool("memory_merge", "Merge two similar memory records into one.", merge_params, merge_memory_tool),
         Tool("memory_update", "Edit text, tags, or confidence of an existing memory record.", update_params, update_memory_tool),
-        Tool("list_skills", "List available skills from configured skill directories. Returns skill:// URIs.", list_skills_params, list_skills_handler),
+        Tool("list_skills", "List available skills. Load one with read(skill://<name>).", list_skills_params, list_skills_handler),
         Tool("task", "Spawn a collaborative subagent to handle a specific task.", spawn_subagent_params, spawn_subagent_handler),
         Tool("message", "Send a message to an active subagent.", send_subagent_message_params, send_subagent_message_handler),
         Tool("close", "Close an active subagent and clean up resources.", close_subagent_params, close_subagent_handler),
