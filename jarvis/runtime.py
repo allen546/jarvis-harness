@@ -16,6 +16,32 @@ from jarvis.tools import Tool, ToolRegistry
 
 current_context: ContextVar[AgentContext | None] = ContextVar("current_context", default=None)
 
+def render_system_prompt(template: str | None, root: str = ".") -> str | None:
+    """Render a Jinja2 system prompt template with live context.
+
+    Available variables:
+        skills_dirs  — list of configured skill directory names
+        mcp_servers  — list of MCP server name strings from mcp_settings.json
+    """
+    if not template:
+        return template
+    from pathlib import Path as _P
+    from jinja2 import Environment, BaseLoader
+    env = Environment(loader=BaseLoader(), autoescape=False)
+    # Discover skill directories
+    base = _P(root)
+    skills_dirs = [d for d in (base / "skills").iterdir() if d.is_dir()] if (base / "skills").exists() else []
+    # Discover MCP servers from config
+    mcp_servers: list[str] = []
+    mcp_cfg = base / "config" / "mcp_settings.json"
+    if mcp_cfg.exists():
+        try:
+            mcp_servers = list(json.loads(mcp_cfg.read_text()).get("mcpServers", {}).keys())
+        except Exception:
+            pass
+    tmpl = env.from_string(template)
+    return tmpl.render(skills_dirs=[d.name for d in skills_dirs], mcp_servers=mcp_servers)
+
 
 @dataclass(slots=True)
 class RuntimeMemoryConfig:
@@ -314,13 +340,13 @@ def _default_hooks(config: SessionConfig | None = None) -> list[TurnHook]:
     return hooks
 
 
-def context_from_config(config: SessionConfig, tools: ToolRegistry, hooks: list[TurnHook] | None = None) -> AgentContext:
+def context_from_config(config: SessionConfig, tools: ToolRegistry, hooks: list[TurnHook] | None = None, root: str = ".") -> AgentContext:
     provider = config.model.provider.lower()
     model_cls = get_model_class(provider)
     h = config.harness
     return AgentContext(
         config=RuntimeConfig(
-            system_prompt=h.system_prompt,
+            system_prompt=render_system_prompt(h.system_prompt, root),
             max_consecutive_tools=h.max_consecutive_tools,
             require_tool_approval=h.require_tool_approval,
             skills_dirs=h.skills_dirs,

@@ -28,7 +28,7 @@ class SessionManager:
             if config.session_id == "default":
                 config.session_id = session_id
             tools = ToolRegistry(builtin_tools(self.workspace))
-            ctx = context_from_config(config, tools)
+            ctx = context_from_config(config, tools, root=str(self.workspace))
             self.sessions[session_id] = AgentSession(ctx=ctx, kernel=AgentKernel(), proxy_env=self._proxy_env)
             logger.info("session: created %s (model=%s/%s)",
                         session_id, config.model.provider, config.model.model_name)
