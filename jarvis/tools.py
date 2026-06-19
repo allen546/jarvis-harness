@@ -70,9 +70,16 @@ class ToolRegistry:
 def _resolve(root: Path, raw_path: str) -> Path:
     candidate = (root / raw_path).resolve()
     root_resolved = root.resolve()
-    if candidate != root_resolved and root_resolved not in candidate.parents:
-        raise ValueError(f"path escapes root: {raw_path}")
-    return candidate
+    # Also allow files under PLAYWRIGHT_WORKSPACE
+    import os
+    pw_ws = os.environ.get("PLAYWRIGHT_WORKSPACE", "")
+    allowed_roots = [root_resolved]
+    if pw_ws:
+        allowed_roots.append(Path(pw_ws).resolve())
+    for r in allowed_roots:
+        if candidate == r or r in candidate.parents:
+            return candidate
+    raise ValueError(f"path escapes root: {raw_path}")
 
 def _resolve_skill(skill_name: str, base: Path) -> Path | None:
     """Resolve a skill:// URI to a SKILL.md path by scanning skills_dirs."""
