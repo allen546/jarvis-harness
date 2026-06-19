@@ -15,31 +15,6 @@ Always commit files with clean messages.
 """
 
 
-@pytest.mark.asyncio
-async def test_list_skills(tmp_path: Path) -> None:
-    """list_skills returns skill:// URIs for all skills in configured dirs."""
-    skills_dir = tmp_path / "skills" / "mock_git"
-    skills_dir.mkdir(parents=True)
-    (skills_dir / "SKILL.md").write_text(MOCK_SKILL_MD)
-
-    tools = ToolRegistry(builtin_tools(tmp_path))
-    ctx = AgentContext(
-        config=RuntimeConfig(skills_dirs=["skills/"]),
-        session=SessionState(id="s1"),
-        model=None,
-        tools=tools,
-        hooks=[],
-    )
-    token = current_context.set(ctx)
-    try:
-        handler = tools._tools["list_skills"].handler
-        result = handler({})
-        parsed = json.loads(result)
-        assert len(parsed) == 1
-        assert parsed[0]["name"] == "mock_git"
-        assert "Mock git" in parsed[0]["description"]
-    finally:
-        current_context.reset(token)
 
 
 @pytest.mark.asyncio
@@ -89,33 +64,6 @@ async def test_read_skill_not_found(tmp_path: Path) -> None:
         current_context.reset(token)
 
 
-@pytest.mark.asyncio
-async def test_list_skills_multiple_dirs(tmp_path: Path) -> None:
-    """list_skills scans multiple configured directories."""
-    for d in [".claude/skills/alpha", ".codex/skills/beta"]:
-        dir_path = tmp_path / d
-        dir_path.mkdir(parents=True)
-        (dir_path / "SKILL.md").write_text(f"---\nname: {d.split('/')[-2]}_{d.split('/')[-1]}\ndescription: Test skill\ntools: {{}}\n---\nBody.")
-
-    tools = ToolRegistry(builtin_tools(tmp_path))
-    ctx = AgentContext(
-        config=RuntimeConfig(skills_dirs=[".claude/skills/", ".codex/skills/"]),
-        session=SessionState(id="s1"),
-        model=None,
-        tools=tools,
-        hooks=[],
-    )
-    token = current_context.set(ctx)
-    try:
-        handler = tools._tools["list_skills"].handler
-        result = handler({})
-        parsed = json.loads(result)
-        assert len(parsed) == 2
-        names = {s["name"] for s in parsed}
-        assert "alpha" in names
-        assert "beta" in names
-    finally:
-        current_context.reset(token)
 
 
 @pytest.mark.asyncio

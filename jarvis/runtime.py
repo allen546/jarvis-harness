@@ -23,8 +23,8 @@ def render_system_prompt(template: str | None, root: str = ".", template_file: s
     Otherwise uses the inline template string.
 
     Available variables:
-        skills_dirs  — list of configured skill directory names
-        mcp_servers  — list of MCP server name strings from mcp_settings.json
+        skills      — list of skill names discovered from SKILL.md files
+        mcp_servers — list of MCP server name strings from mcp_settings.json
     """
     from pathlib import Path as _P
     from jinja2 import Environment, BaseLoader
@@ -37,8 +37,24 @@ def render_system_prompt(template: str | None, root: str = ".", template_file: s
     if not template:
         return template
     env = Environment(loader=BaseLoader(), autoescape=False)
-    # Discover skill directories
-    skills_dirs = [d for d in (base / "skills").iterdir() if d.is_dir()] if (base / "skills").exists() else []
+    # Discover skills from SKILL.md files in configured dirs
+    import yaml as _yaml
+    skills: list[str] = []
+    for d in (base / "skills").iterdir() if (base / "skills").exists() else []:
+        if not d.is_dir():
+            continue
+        skill_file = d / "SKILL.md"
+        if not skill_file.exists():
+            continue
+        try:
+            parts = skill_file.read_text(encoding="utf-8").split("---", 2)
+            if len(parts) >= 3:
+                meta = _yaml.safe_load(parts[1]) or {}
+                skills.append(meta.get("name", d.name))
+            else:
+                skills.append(d.name)
+        except Exception:
+            skills.append(d.name)
     # Discover MCP servers from config
     mcp_servers: list[str] = []
     mcp_cfg = base / "config" / "mcp_settings.json"
@@ -48,7 +64,7 @@ def render_system_prompt(template: str | None, root: str = ".", template_file: s
         except Exception:
             pass
     tmpl = env.from_string(template)
-    return tmpl.render(skills_dirs=[d.name for d in skills_dirs], mcp_servers=mcp_servers)
+    return tmpl.render(skills=skills, mcp_servers=mcp_servers)
 
 
 @dataclass(slots=True)

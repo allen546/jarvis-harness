@@ -308,42 +308,6 @@ def builtin_tools(root: Path | str = ".") -> list[Tool]:
         },
         "required": ["id"]
     }
-    list_skills_params = {"type": "object", "properties": {}}
-
-    def list_skills_handler(args: dict[str, Any]) -> str:
-        import yaml as _yaml
-        from jarvis.runtime import current_context
-        ctx = current_context.get()
-        skills_dirs = ["skills/"]
-        if ctx and hasattr(ctx, "config"):
-            skills_dirs = getattr(ctx.config, "skills_dirs", skills_dirs)
-        skills: list[dict[str, str]] = []
-        seen: set[str] = set()
-        for d in skills_dirs:
-            dir_path = base / d
-            if not dir_path.exists():
-                continue
-            for entry in sorted(dir_path.iterdir()):
-                if not entry.is_dir():
-                    continue
-                skill_file = entry / "SKILL.md"
-                if not skill_file.exists():
-                    continue
-                content = skill_file.read_text(encoding="utf-8")
-                parts = content.split("---", 2)
-                desc = ""
-                if len(parts) >= 3:
-                    try:
-                        meta = _yaml.safe_load(parts[1]) or {}
-                        desc = meta.get("description", "")
-                    except Exception:
-                        pass
-                name = entry.name
-                if name not in seen:
-                    skills.append({"name": name, "description": str(desc)})
-                    seen.add(name)
-        import json as _json
-        return _json.dumps(skills)
 
 
     async def spawn_subagent_handler(args: dict[str, Any]) -> str:
@@ -491,7 +455,6 @@ def builtin_tools(root: Path | str = ".") -> list[Tool]:
         Tool("memory_distill_now", "Force-distill undistilled session messages into semantic memory.", distill_now_params, distill_now_tool),
         Tool("memory_merge", "Merge two similar memory records into one.", merge_params, merge_memory_tool),
         Tool("memory_update", "Edit text, tags, or confidence of an existing memory record.", update_params, update_memory_tool),
-        Tool("list_skills", "List available skills. Load one with read(skill://<name>).", list_skills_params, list_skills_handler),
         Tool("task", "Spawn a collaborative subagent to handle a specific task.", spawn_subagent_params, spawn_subagent_handler),
         Tool("message", "Send a message to an active subagent.", send_subagent_message_params, send_subagent_message_handler),
         Tool("close", "Close an active subagent and clean up resources.", close_subagent_params, close_subagent_handler),

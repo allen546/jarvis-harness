@@ -10,7 +10,7 @@
   },
   "harness": {
     "system_prompt_file": "prompts/system.md",
-    "max_consecutive_tools": 5,
+    "max_consecutive_tools": 10,
     "require_tool_approval": false
   }
 }
