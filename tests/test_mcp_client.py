@@ -98,21 +98,23 @@ async def test_agent_session_lazy_init_and_close(monkeypatch: pytest.MonkeyPatch
     
     session = AgentSession(ctx=ctx, kernel=MockKernel())
     
+    # MCP not loaded at startup
     assert not session._mcp_initialized
     assert ctx.mcp_manager is None
     assert "lazy_mcp_tool" not in ctx.tools._tools
     
-    events = []
-    async def run_submit():
-        async for event in session.submit(Message(role="user", content="run")):
-            events.append(event)
-            
-    await run_submit()
-        
+    # load_mcp tool is registered
+    assert "load_mcp" in ctx.tools._tools
+    
+    # Call load_mcp to trigger lazy init
+    result = await ctx.tools._tools["load_mcp"].handler({})
+    assert "lazy_mcp_tool" in result
+    assert initialized_called == 1
+    
+    # Now MCP is initialized
     assert session._mcp_initialized
     assert ctx.mcp_manager is not None
     assert "lazy_mcp_tool" in ctx.tools._tools
-    assert initialized_called == 1
     
     await session.close()
     

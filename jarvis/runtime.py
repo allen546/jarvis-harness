@@ -117,12 +117,12 @@ class AgentSession:
             parameters={"type": "object", "properties": {}},
             handler=self._load_mcp_tool,
         ))
-
     async def _load_mcp_tool(self, args: dict[str, Any]) -> str:
         loaded = await self._ensure_mcp()
         if loaded:
             return f"Loaded {loaded} MCP tools: {', '.join(self._mcp_tool_names)}"
         return "No MCP servers configured or already loaded."
+
 
     async def _ensure_mcp(self) -> int:
         """Load MCP tools if not yet initialized. Returns count of newly loaded tools."""
@@ -211,7 +211,6 @@ class AgentSession:
                     await self._expire_session()
             self.last_activity = time.time()
 
-            await self._ensure_mcp()
             token = current_context.set(self.ctx)
             event_queue: asyncio.Queue[AgentEvent | None] = asyncio.Queue()
             

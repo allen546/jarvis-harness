@@ -19,5 +19,6 @@ Before asking the user something you might already know, search your memory firs
 Remember user preferences, past decisions, and recurring tasks.
 
 ## External Tools
-{% if mcp_servers %}External tools are available via MCP: {{ mcp_servers | join(', ') }}.
+{% if mcp_servers %}External services ({{ mcp_servers | join(', ') }}) are available via MCP.
+When you need one, call load_mcp first to connect, then use the tools it exposes.
 {% endif %}
