@@ -21,6 +21,20 @@ class EmbeddingConfig(BaseModel):
     model: str = "text-embedding-3-small"
     dimensions: int = 256            # only used by local fallback
 
+class MemoryConfig(BaseModel):
+    enabled: bool = True
+    storage_dir: str = "storage"
+    scope: str = "global"
+    session_ttl_seconds: int = 600
+    refresh_threshold_messages: int = 24
+    refresh_keep_messages: int = 12
+    distill_interval_turns: int = 10
+    inject_top_facts: int = 3
+    inject_top_procedures: int = 2
+    inject_min_score: float = 0.35
+    auto_distill_skills: bool = True
+    skill_min_observations: int = 3
+
 class HeartbeatConfig(BaseModel):
     enabled: bool = False
     interval_secs: int = 300
@@ -30,7 +44,7 @@ class HarnessConfig(BaseModel):
     system_prompt: Optional[str] = None
     max_consecutive_tools: int = 5
     require_tool_approval: bool = False
-    allowed_skills: list[str] = Field(default_factory=list)
+    skills_dirs: list[str] = Field(default_factory=lambda: ["skills/"])
     stream: bool = True
     # safety hooks
     max_repeated_tool_calls: int = 3
@@ -40,6 +54,8 @@ class HarnessConfig(BaseModel):
     embedding: EmbeddingConfig = Field(default_factory=EmbeddingConfig)
     # heartbeat
     heartbeat: HeartbeatConfig = Field(default_factory=HeartbeatConfig)
+    # memory
+    memory: MemoryConfig = Field(default_factory=MemoryConfig)
 
 class QQChannelConfig(BaseModel):
     enabled: bool = False

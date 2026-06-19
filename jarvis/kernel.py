@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from typing import AsyncIterator
 
 from jarvis.events import ErrorEvent, MessageEvent, NativeActionEvent, TextDeltaEvent, ToolCallEvent, ToolResultEvent
@@ -8,11 +9,20 @@ from jarvis.models.base import Message, ModelResponse
 from jarvis.runtime import AgentContext
 from jarvis.tools import ToolResult
 
+logger = logging.getLogger(__name__)
+
+
+def _truncate(text: str, max_len: int) -> str:
+    if len(text) <= max_len:
+        return text
+    return text[:max_len] + "…"
+
 
 class AgentKernel:
     async def run_turn(self, ctx: AgentContext, user_message: Message) -> AsyncIterator[object]:
         ctx.session.history.append(user_message)
         messages = self._with_system_prompt(ctx, list(ctx.session.history))
+        synthesis_injected = False
         try:
             while True:
                 hook_result = await self._run_before_model(ctx, messages)
@@ -69,15 +79,23 @@ class AgentKernel:
 
                 messages.append(Message(role="assistant", content=assistant.content, metadata={"tool_calls": [tc.model_dump() for tc in response.tool_calls]}))
                 for tool_call in response.tool_calls:
+                    logger.info("tool call: %s(%s)", tool_call.tool_name, _truncate(tool_call.arguments, 200))
                     yield ToolCallEvent(session_id=ctx.session.id, tool_call=tool_call)
                     before_tool = await self._run_before_tool(ctx, tool_call)
                     if before_tool.stop:
-                        yield ErrorEvent(session_id=ctx.session.id, message=before_tool.reason or "turn stopped")
-                        return
+                        if synthesis_injected:
+                            logger.warning("tool budget exceeded after synthesis prompt, forcing stop")
+                            yield ErrorEvent(session_id=ctx.session.id, message=before_tool.reason or "turn stopped")
+                            return
+                        synthesis_injected = True
+                        logger.warning("tool budget exceeded, injecting synthesis prompt")
+                        messages.append(Message(role="user", content="You have reached the tool call limit. Please synthesize your findings into a final response now. Do not call any more tools."))
+                        break  # re-enter model loop for final synthesis
                     if before_tool.skip_tool:
                         result = ToolResult(call_id=tool_call.call_id, tool_name=tool_call.tool_name, content=before_tool.reason or "tool skipped", is_error=True)
                     else:
                         result = await ctx.tools.execute(tool_call)
+                    logger.info("tool result: %s -> %s", tool_call.tool_name, _truncate(result.content, 300))
                     yield ToolResultEvent(
                         session_id=ctx.session.id,
                         call_id=result.call_id,

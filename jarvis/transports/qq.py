@@ -65,6 +65,21 @@ class QQBot(botpy.Client):
         if not content and not botpy_attachments:
             return
         logger.info("qq: C2C DM from %s (%d attachments): %s", openid, len(botpy_attachments), content[:80] or "[no text]")
+        # Debug: dump full raw message for forwarded/card messages
+        if not content or "卡片" in content or "转发" in content:
+            import json as _json
+            _raw = {}
+            for k in dir(message):
+                if k.startswith("_"):
+                    continue
+                try:
+                    v = getattr(message, k, None)
+                    _json.dumps(v)
+                    _raw[k] = v
+                except (TypeError, ValueError):
+                    pass
+            with open("/home/allen/jarvis/qq_raw_debug.json", "w") as _f:
+                _json.dump(_raw, _f, ensure_ascii=False, indent=2)
         if self._allowed_senders is not None and openid not in self._allowed_senders:
             logger.warning("qq: rejected DM from unauthorized sender %s", openid)
             await message._api.post_c2c_message(

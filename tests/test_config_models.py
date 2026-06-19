@@ -32,12 +32,12 @@ def test_runtime_config_extensions() -> None:
         system_prompt="test",
         max_consecutive_tools=10,
         require_tool_approval=True,
-        allowed_skills=["git"],
+        skills_dirs=[".claude/skills/", ".codex/skills/"],
         stream=False
     )
     assert config.max_consecutive_tools == 10
     assert config.require_tool_approval is True
-    assert config.allowed_skills == ["git"]
+    assert config.skills_dirs == [".claude/skills/", ".codex/skills/"]
     assert config.stream is False
 
     # Assert default values
@@ -45,8 +45,11 @@ def test_runtime_config_extensions() -> None:
     assert config_default.system_prompt is None
     assert config_default.max_consecutive_tools == 5
     assert config_default.require_tool_approval is False
-    assert config_default.allowed_skills == []
+    assert config_default.skills_dirs == ["skills/"]
     assert config_default.stream is True
+    assert config_default.memory.scope == "global"
+    assert config_default.memory.session_ttl_seconds == 600
+    assert config_default.memory.inject_min_score == 0.35
 
 
 def test_context_from_config_propagation() -> None:
@@ -62,23 +65,29 @@ def test_context_from_config_propagation() -> None:
     assert ctx_default.config.stream is True
     assert ctx_default.config.max_consecutive_tools == 5
     assert ctx_default.config.require_tool_approval is False
-    assert ctx_default.config.allowed_skills == []
+    assert ctx_default.config.skills_dirs == ["skills/"]
 
     # 2. Explicit propagation (e.g. loading HarnessConfig(stream=False)) yields stream=False in ctx.config.
+    from jarvis.config import MemoryConfig
     config_explicit = SessionConfig(
         model=ModelConfig(provider="openai", model_name="gpt-4o"),
         harness=HarnessConfig(
             system_prompt="custom prompt",
             max_consecutive_tools=12,
             require_tool_approval=True,
-            allowed_skills=["git", "cmd"],
-            stream=False
+            skills_dirs=[".claude/skills/", ".codex/skills/"],
+            stream=False,
+            memory=MemoryConfig(scope="global", session_ttl_seconds=300, refresh_threshold_messages=9, inject_min_score=0.5),
         )
     )
     ctx_explicit = context_from_config(config_explicit, ToolRegistry())
     assert ctx_explicit.config.system_prompt == "custom prompt"
     assert ctx_explicit.config.max_consecutive_tools == 12
     assert ctx_explicit.config.require_tool_approval is True
-    assert ctx_explicit.config.allowed_skills == ["git", "cmd"]
+    assert ctx_explicit.config.skills_dirs == [".claude/skills/", ".codex/skills/"]
     assert ctx_explicit.config.stream is False
+    assert ctx_explicit.config.memory.scope == "global"
+    assert ctx_explicit.config.memory.session_ttl_seconds == 300
+    assert ctx_explicit.config.memory.refresh_threshold_messages == 9
+    assert ctx_explicit.config.memory.inject_min_score == 0.5
 

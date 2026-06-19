@@ -8,9 +8,11 @@ from jarvis.runtime import AgentContext, RuntimeConfig, SessionState
 from jarvis.tools import Tool, ToolRegistry
 from jarvis.kernel import AgentKernel
 
+
 class DummyModel(BaseModelClient):
     async def generate(self, messages: list[Message], tools: list[Any]) -> ModelResponse:
         return ModelResponse()
+
 
 @pytest.mark.asyncio
 async def test_jsonl_history_hook(tmp_path: Path):
@@ -18,8 +20,8 @@ async def test_jsonl_history_hook(tmp_path: Path):
     hook = JSONLHistoryHook(storage_dir=str(storage_dir))
     state = SessionState(id="sess1")
     ctx = AgentContext(config=RuntimeConfig(), session=state, model=DummyModel(), tools=ToolRegistry(), hooks=[])
-    
-    # 1. Test before_model loads empty history
+
+    # 1. Test before_model — sessions start fresh, no history loaded from disk
     await hook.before_model(ctx, [])
     assert len(state.history) == 0
 
@@ -37,13 +39,11 @@ async def test_jsonl_history_hook(tmp_path: Path):
     assert json.loads(lines[0])["content"] == "hello"
     assert json.loads(lines[1])["content"] == "hi there"
 
-    # 3. Test before_model loads from file
+    # 3. Test before_model starts fresh — no history loaded from file
     new_state = SessionState(id="sess1")
     new_ctx = AgentContext(config=RuntimeConfig(), session=new_state, model=DummyModel(), tools=ToolRegistry(), hooks=[])
     await hook.before_model(new_ctx, [])
-    assert len(new_state.history) == 2
-    assert new_state.history[0].content == "hello"
-    assert new_state.history[1].content == "hi there"
+    assert len(new_state.history) == 0
 
 
 class SequenceModel(BaseModelClient):
@@ -63,8 +63,8 @@ async def echo(args: dict[str, object]) -> str:
 @pytest.mark.asyncio
 async def test_history_hook_real_flow(tmp_path: Path):
     storage_dir = tmp_path / "storage"
-    
-    # Pre-populate history on disk
+
+    # Pre-populate history on disk (audit trail only — not replayed)
     session_id = "sess_real"
     file_path = storage_dir / "sessions" / session_id / "history.jsonl"
     file_path.parent.mkdir(parents=True, exist_ok=True)
@@ -82,24 +82,22 @@ async def test_history_hook_real_flow(tmp_path: Path):
         tools=ToolRegistry(),
         hooks=[hook],
     )
-    
+
     kernel = AgentKernel()
     user_msg = Message(role="user", content="current user msg")
-    
+
     events = [event async for event in kernel.run_turn(ctx, user_msg)]
-    
-    # Check that model received: system_prompt, past user, past assistant, current user
+
+    # Sessions start fresh: model receives system_prompt + current user only (no prior history)
     assert len(model.calls) == 1
     received = model.calls[0]
     roles_and_contents = [(m.role, m.content) for m in received]
     assert roles_and_contents == [
         ("system", "system"),
-        ("user", "past user msg"),
-        ("assistant", "past assistant msg"),
         ("user", "current user msg")
     ]
-    
-    # Check that the history file now contains the new turn's messages
+
+    # History file now contains the new turn's messages
     lines = file_path.read_text().splitlines()
     assert len(lines) == 4
     assert json.loads(lines[2])["content"] == "current user msg"
@@ -111,13 +109,13 @@ async def test_history_hook_with_tool_calls(tmp_path: Path):
     storage_dir = tmp_path / "storage"
     hook = JSONLHistoryHook(storage_dir=str(storage_dir))
     state = SessionState(id="sess_tools")
-    
+
     call = ToolCall(call_id="c1", tool_name="echo", arguments={"value": "ok"})
     model = SequenceModel([
         ModelResponse(content="using tool", tool_calls=[call]),
         ModelResponse(content="done")
     ])
-    
+
     ctx = AgentContext(
         config=RuntimeConfig(system_prompt="system"),
         session=state,
@@ -125,17 +123,17 @@ async def test_history_hook_with_tool_calls(tmp_path: Path):
         tools=ToolRegistry([Tool("echo", "Echo value.", {"type": "object"}, echo)]),
         hooks=[hook],
     )
-    
+
     kernel = AgentKernel()
     user_msg = Message(role="user", content="run tool please")
-    
+
     events = [event async for event in kernel.run_turn(ctx, user_msg)]
-    
+
     # Verify history file has logged everything from the turn
     file_path = storage_dir / "sessions" / "sess_tools" / "history.jsonl"
     assert file_path.exists()
     lines = file_path.read_text().splitlines()
-    
+
     # Should contain: user msg, tool call assistant msg, tool response, done assistant msg
     assert len(lines) == 4
     msgs = [json.loads(line) for line in lines]

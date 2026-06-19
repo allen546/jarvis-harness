@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import inspect
 import json
+import warnings
 from pathlib import Path
 from typing import Protocol
 
@@ -46,43 +47,22 @@ class NoopTurnHook:
 
 
 class JSONLHistoryHook(NoopTurnHook):
-    __slots__ = ("storage_dir", "_loaded_sessions", "_turn_start_index")
+    """Append-only raw history writer. Sessions start fresh — no replay from disk."""
+
+    __slots__ = ("storage_dir", "_turn_start_index")
 
     def __init__(self, storage_dir: str = "storage") -> None:
         self.storage_dir = storage_dir
-        self._loaded_sessions: set[int] = set()
         self._turn_start_index: dict[int, int] = {}
 
     def _get_file_path(self, session_id: str) -> Path:
         return Path(self.storage_dir) / "sessions" / session_id / "history.jsonl"
 
     async def before_model(self, ctx: object, messages: list[Message]) -> HookResult:
+        # Sessions start fresh — no history loaded from disk into context.
         session = getattr(ctx, "session")
         session_key = id(session)
-        
-        if session_key not in self._loaded_sessions:
-            file_path = self._get_file_path(session.id)
-            loaded_history = []
-            if file_path.exists():
-                with open(file_path, "r", encoding="utf-8") as f:
-                    for line in f:
-                        if line.strip():
-                            loaded_history.append(Message.model_validate(json.loads(line)))
-            
-            if loaded_history:
-                session.history = loaded_history + session.history
-                
-                # Prepend the loaded history to the messages list being sent to the model
-                if messages and messages[0].role == "system":
-                    messages = [messages[0]] + loaded_history + messages[1:]
-                else:
-                    messages = loaded_history + messages
-            
-            self._loaded_sessions.add(session_key)
-
-        # Track the start of the current turn in session.history
         self._turn_start_index[session_key] = len(session.history) - 1
-        
         return HookResult(messages=messages)
 
     async def after_turn(self, ctx: object, message: Message) -> HookResult:
@@ -90,63 +70,176 @@ class JSONLHistoryHook(NoopTurnHook):
         session_key = id(session)
         file_path = self._get_file_path(session.id)
         file_path.parent.mkdir(parents=True, exist_ok=True)
-        
+
         start_idx = self._turn_start_index.get(session_key, len(session.history) - 1)
         start_idx = max(0, min(start_idx, len(session.history) - 1))
-        
+
         new_messages = session.history[start_idx:]
-        
+
         with open(file_path, "a", encoding="utf-8") as f:
             for m in new_messages:
                 f.write(json.dumps(m.model_dump()) + "\n")
-                
+
         self._turn_start_index.pop(session_key, None)
         return HookResult()
 
 
-class ContextCompressionHook(NoopTurnHook):
-    __slots__ = ("threshold", "compress_count")
+class SessionRefreshHook(NoopTurnHook):
+    """Compress undistilled messages in-place when context grows too long.
+    
+    Extracts facts/procedures + summary in one model call.
+    Marks compressed messages as distilled. Stores history_summary in semantic memory.
+    """
 
-    def __init__(self, threshold: int = 20, compress_count: int = 10) -> None:
+    __slots__ = ("storage_dir", "threshold", "keep_messages")
+
+    def __init__(self, storage_dir: str = "storage", threshold: int = 24, keep_messages: int = 12) -> None:
+        self.storage_dir = storage_dir
         self.threshold = threshold
-        self.compress_count = compress_count
+        self.keep_messages = keep_messages
+
+    def _get_refresh_file_path(self, session_id: str) -> Path:
+        return Path(self.storage_dir) / "sessions" / session_id / "refreshes.jsonl"
 
     async def before_model(self, ctx: object, messages: list[Message]) -> HookResult:
         session = getattr(ctx, "session")
-        model = getattr(ctx, "model")
-        if len(session.history) >= self.threshold:
-            to_compress = session.history[:self.compress_count]
-            remaining = session.history[self.compress_count:]
-            
-            prompt_msgs = [
-                Message(role="system", content="Summarize the following chat history concisely:"),
-                *to_compress
-            ]
+        model = getattr(ctx, "model", None)
+        if model is None or len(session.history) < self.threshold:
+            return HookResult()
+
+        # Find undistilled messages in the compressible zone (everything except recent N)
+        compressible = session.history[:-self.keep_messages] if self.keep_messages > 0 else session.history
+        undistilled = [m for m in compressible if not m.metadata.get("distilled")]
+
+        if not undistilled:
+            return HookResult()
+
+        # One model call: compress + distill
+        prompt_msgs = [
+            Message(role="system", content=(
+                "Compress and distill this Jarvis conversation segment. "
+                "Return strict JSON only, no markdown.\n"
+                "Schema: {\"summary\": str, \"facts\": [{\"text\": str, \"tags\": [str], \"confidence\": float}], "
+                "\"procedures\": [{\"name\": str, \"trigger\": str, \"summary\": str, \"steps\": [str], "
+                "\"tools\": [str], \"confidence\": float}]}\n"
+                "Summary should preserve user preferences, durable facts, unresolved tasks, decisions, and procedures. "
+                "Facts are stable truths. Procedures are reusable task patterns. Do not invent details."
+            )),
+            *undistilled,
+        ]
+
+        try:
             response = await model.generate(prompt_msgs, [])
-            summary_content = response.content or "No summary"
-            summary_msg = Message(role="system", content=f"[Summary of previous conversation: {summary_content}]")
-            
-            session.history = [summary_msg] + remaining
-            
-            # Rebuild the messages list that we return to the kernel loop
-            new_messages = list(session.history)
-            if any(m.role == "system" for m in messages):
-                # Preserve the active system prompt at the top, but skip summaries
-                # that are now in session.history to avoid duplication
-                sys_msgs = [m for m in messages if m.role == "system" and not m.content.startswith("[Summary of")]
-                new_messages = sys_msgs + new_messages
-            
-            return HookResult(messages=new_messages)
-        return HookResult()
+            response_text = response.content or ""
+        except Exception as exc:
+            warnings.warn(f"SessionRefreshHook model call failed: {exc}")
+            return HookResult()
+
+        # Parse response
+        summary_content = response_text
+        facts = []
+        procedures = []
+        try:
+            parsed = json.loads(response_text)
+            summary_content = parsed.get("summary", response_text)
+            facts = parsed.get("facts", [])
+            procedures = parsed.get("procedures", [])
+        except (json.JSONDecodeError, AttributeError):
+            pass  # Use raw text as summary, no fact/procedure extraction
+
+        # Mark all processed messages as distilled
+        for m in undistilled:
+            m.metadata["distilled"] = True
+
+        # Replace undistilled messages with summary in session.history
+        recent = session.history[-self.keep_messages:] if self.keep_messages > 0 else []
+        summary_msg = Message(
+            role="system",
+            content=f"[Session refresh: {summary_content}]",
+            metadata={"memory_kind": "session_refresh", "distilled": True},
+        )
+        session.history = [summary_msg] + recent
+
+        # Store facts/procedures in semantic memory
+        try:
+            from jarvis.memory_store import SemanticMemoryStore
+            memory_config = getattr(getattr(ctx, "config", None), "memory", None)
+            scope = getattr(memory_config, "scope", "global") if memory_config else "global"
+            storage_dir = getattr(memory_config, "storage_dir", self.storage_dir) if memory_config else self.storage_dir
+            store = SemanticMemoryStore(storage_dir=storage_dir)
+
+            for fact in facts:
+                text = fact.get("text", "")
+                if text:
+                    await store.add_memory(
+                        session.id, text, fact.get("tags", ["truths"]),
+                        kind="fact", scope=scope,
+                        metadata={"source": "session_refresh"},
+                        confidence=fact.get("confidence", 1.0),
+                    )
+            for proc in procedures:
+                name = proc.get("name", "")
+                steps = proc.get("steps", [])
+                if name and steps:
+                    await store.add_memory(
+                        session.id, proc.get("summary", name),
+                        ["procedure", *proc.get("tools", [])],
+                        kind="procedure", scope=scope,
+                        metadata={
+                            "name": name,
+                            "trigger": proc.get("trigger", ""),
+                            "steps": steps,
+                            "tools": proc.get("tools", []),
+                            "source": "session_refresh",
+                        },
+                        confidence=proc.get("confidence", 1.0),
+                    )
+
+            # Store history summary
+            await store.add_memory(
+                session.id, summary_content,
+                ["history", "session_refresh"],
+                kind="history_summary", scope=scope,
+                metadata={"refreshed_message_count": len(undistilled)},
+            )
+        except Exception as exc:
+            warnings.warn(f"Error storing session refresh memory: {exc}")
+
+        # Append refresh record to refreshes.jsonl
+        try:
+            refresh_path = self._get_refresh_file_path(session.id)
+            refresh_path.parent.mkdir(parents=True, exist_ok=True)
+            import datetime
+            record = {
+                "session_id": session.id,
+                "created_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                "summary": summary_content,
+                "refreshed_message_count": len(undistilled),
+                "kept_message_count": len(recent),
+            }
+            with open(refresh_path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(record) + "\n")
+        except Exception as exc:
+            warnings.warn(f"Error writing refresh record: {exc}")
+
+        # Rebuild messages preserving active system prompt at index 0
+        new_messages = list(session.history)
+        if messages and messages[0].role == "system":
+            # Keep the original system prompt, skip any refresh summaries now in history
+            sys_msg = messages[0]
+            non_sys = [m for m in new_messages if m is not summary_msg]
+            new_messages = [sys_msg] + non_sys
+
+        return HookResult(messages=new_messages)
 
 
 class BudgetGuardHook(NoopTurnHook):
     __slots__ = ("_counts", "_last_history_len")
-    
+
     def __init__(self) -> None:
         self._counts: dict[str, int] = {}
         self._last_history_len: dict[str, int] = {}
-        
+
     async def before_model(self, ctx: object, messages: list[Message]) -> HookResult:
         session = getattr(ctx, "session")
         session_id = session.id
@@ -155,7 +248,7 @@ class BudgetGuardHook(NoopTurnHook):
             self._counts[session_id] = 0
             self._last_history_len[session_id] = hist_len
         return HookResult()
-        
+
     async def before_tool(self, ctx: object, tool_call: ToolCall) -> HookResult:
         session = getattr(ctx, "session")
         config = getattr(ctx, "config")
@@ -164,7 +257,7 @@ class BudgetGuardHook(NoopTurnHook):
         if count >= limit:
             return HookResult(stop=True, reason=f"Tool execution budget limit exceeded: max {limit} consecutive calls")
         return HookResult()
-        
+
     async def after_tool(self, ctx: object, tool_call: ToolCall, result: ToolResult) -> HookResult:
         session = getattr(ctx, "session")
         self._counts[session.id] = self._counts.get(session.id, 0) + 1
@@ -179,21 +272,21 @@ class BudgetGuardHook(NoopTurnHook):
 
 class ToolApprovalHook(NoopTurnHook):
     __slots__ = ()
-    
+
     async def before_tool(self, ctx: object, tool_call: ToolCall) -> HookResult:
         config = getattr(ctx, "config")
         require_approval = getattr(config, "require_tool_approval", False)
         if not require_approval:
             return HookResult()
-            
+
         handler = getattr(ctx, "approval_handler", None)
         if handler is None:
             return HookResult(skip_tool=True, reason="Tool approval required but no handler registered")
-            
+
         approved = handler(tool_call)
         if inspect.isawaitable(approved):
             approved = await approved
-            
+
         if not approved:
             return HookResult(skip_tool=True, reason="Tool call rejected by user")
         return HookResult()
@@ -205,8 +298,8 @@ class RepeatedLoopHook(NoopTurnHook):
 
     def __init__(self, max_repeats: int = 3) -> None:
         self._max_repeats = max_repeats
-        self._consecutive: dict[str, int] = {}  # session_id -> count of same call
-        self._last_keys: dict[str, str] = {}    # session_id -> last tool call key
+        self._consecutive: dict[str, int] = {}
+        self._last_keys: dict[str, str] = {}
 
     async def after_tool(self, ctx: object, tool_call: ToolCall, result: ToolResult) -> HookResult:
         session = getattr(ctx, "session")
@@ -216,7 +309,6 @@ class RepeatedLoopHook(NoopTurnHook):
             count = self._consecutive.get(session.id, 0) + 1
             self._consecutive[session.id] = count
             if count >= self._max_repeats:
-                # Clean up so next turn starts fresh
                 self._consecutive.pop(session.id, None)
                 self._last_keys.pop(session.id, None)
                 return HookResult(
@@ -263,7 +355,7 @@ class RepeatedContentHook(NoopTurnHook):
     def __init__(self, threshold: float = 0.8, window: int = 3) -> None:
         self._threshold = threshold
         self._window = window
-        self._recent: dict[str, list[str]] = {}  # session_id -> recent assistant contents
+        self._recent: dict[str, list[str]] = {}
 
     async def after_turn(self, ctx: object, message: Message) -> HookResult:
         session = getattr(ctx, "session")
@@ -271,7 +363,6 @@ class RepeatedContentHook(NoopTurnHook):
         if not content:
             return HookResult()
         recent = self._recent.setdefault(session.id, [])
-        # Evict oldest before checking, so only the sliding window is compared
         if len(recent) >= self._window:
             recent.pop(0)
         for prev in recent:
@@ -285,10 +376,10 @@ class RepeatedContentHook(NoopTurnHook):
 
 
 def __getattr__(name: str):
-    if name == "SemanticMemoryHook":
-        from jarvis.memory_store import SemanticMemoryHook
-        return SemanticMemoryHook
-    if name == "SkillInstructionsHook":
-        from jarvis.skills import SkillInstructionsHook
-        return SkillInstructionsHook
+    if name == "MemoryDistillationHook":
+        from jarvis.memory_store import MemoryDistillationHook
+        return MemoryDistillationHook
+    if name == "MemoryInjectionHook":
+        from jarvis.memory_store import MemoryInjectionHook
+        return MemoryInjectionHook
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

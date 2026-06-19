@@ -74,6 +74,20 @@ def _resolve(root: Path, raw_path: str) -> Path:
         raise ValueError(f"path escapes root: {raw_path}")
     return candidate
 
+def _resolve_skill(skill_name: str, base: Path) -> Path | None:
+    """Resolve a skill:// URI to a SKILL.md path by scanning skills_dirs."""
+    from jarvis.runtime import current_context
+    ctx = current_context.get()
+    skills_dirs = ["skills/"]
+    if ctx and hasattr(ctx, "config"):
+        skills_dirs = getattr(ctx.config, "skills_dirs", skills_dirs)
+    for d in skills_dirs:
+        skill_dir = base / d / skill_name
+        skill_file = skill_dir / "SKILL.md"
+        if skill_file.exists():
+            return skill_file
+    return None
+
 
 def builtin_tools(root: Path | str = ".") -> list[Tool]:
     base = Path(root)
@@ -91,7 +105,17 @@ def builtin_tools(root: Path | str = ".") -> list[Tool]:
         )
 
     def read_file(args: dict[str, Any]) -> str | ToolResult:
-        target = _resolve(base, str(args["path"]))
+        raw_path = str(args["path"])
+        # Resolve skill:/// URIs
+        if raw_path.startswith("skill://"):
+            skill_name = raw_path[len("skill://"):]
+            resolved = _resolve_skill(skill_name, base)
+            if resolved is None:
+                return f"Error: skill not found: {skill_name}"
+            # Read the SKILL.md and return content + resolved path
+            content = resolved.read_text(encoding="utf-8", errors="replace")
+            return f"[skill path: {resolved.parent}]\n\n{content}"
+        target = _resolve(base, raw_path)
         chunk_idx = args.get("chunk", 0)
         if not target.exists():
             return f"Error: file not found: {target}"
@@ -223,38 +247,104 @@ def builtin_tools(root: Path | str = ".") -> list[Tool]:
         },
         "required": ["path"],
     }
-    from jarvis.memory_store import search_semantic_memory_tool, purge_semantic_memory_tool, store_semantic_memory_tool
+    from jarvis.memory_store import (
+        search_semantic_memory_tool, purge_semantic_memory_tool, store_semantic_memory_tool,
+        check_redundancy_tool, distill_now_tool, merge_memory_tool, update_memory_tool,
+    )
     search_params = {
         "type": "object",
         "properties": {
             "query": {"type": "string", "description": "The search query."},
-            "tag": {"type": "string", "description": "Optional tag filter (e.g. 'truths', 'history')."}
+            "tag": {"type": "string", "description": "Optional tag filter (e.g. 'truths', 'history')."},
+            "kind": {"type": "string", "enum": ["fact", "procedure", "history_summary"], "description": "Optional kind filter."},
+            "scope": {"type": "string", "enum": ["global", "session", "both"], "description": "Memory scope to search."},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 20, "description": "Max results (default 5)."},
         },
         "required": ["query"]
     }
     purge_params = {
         "type": "object",
         "properties": {
-            "tag": {"type": "string", "description": "Tag to purge memories by (e.g. 'truths', 'history')."},
-            "ids": {
-                "type": "array",
-                "items": {"type": "string"},
-                "description": "Optional list of memory item IDs to purge."
-            }
+            "tag": {"type": "string", "description": "Tag to purge memories by."},
+            "ids": {"type": "array", "items": {"type": "string"}, "description": "Memory item IDs to purge."},
+            "kind": {"type": "string", "enum": ["fact", "procedure", "history_summary"], "description": "Kind to purge."},
+            "scope": {"type": "string", "enum": ["global", "session", "both"], "description": "Memory scope to purge from."},
         }
     }
     store_params = {
         "type": "object",
         "properties": {
-            "text": {"type": "string", "description": "The fact or information to store."},
-            "tags": {
-                "type": "array",
-                "items": {"type": "string"},
-                "description": "Optional tags for the memory (default: ['truths'])."
-            }
+            "text": {"type": "string", "description": "The fact or procedure to store."},
+            "tags": {"type": "array", "items": {"type": "string"}, "description": "Tags (default: ['truths'])."},
+            "kind": {"type": "string", "enum": ["fact", "procedure"], "description": "Memory kind (default: 'fact')."},
+            "scope": {"type": "string", "enum": ["global", "session"], "description": "Memory scope."},
+            "metadata": {"type": "object", "description": "Arbitrary metadata dict."},
+            "confidence": {"type": "number", "minimum": 0, "maximum": 1, "description": "Confidence 0-1 (default 1.0)."},
         },
         "required": ["text"]
     }
+    check_redundancy_params = {
+        "type": "object",
+        "properties": {
+            "limit": {"type": "integer", "minimum": 1, "maximum": 20, "description": "Max pairs to return (default 10)."},
+        }
+    }
+    distill_now_params = {"type": "object", "properties": {}}
+    merge_params = {
+        "type": "object",
+        "properties": {
+            "id_a": {"type": "string", "description": "First record ID."},
+            "id_b": {"type": "string", "description": "Second record ID."},
+        },
+        "required": ["id_a", "id_b"]
+    }
+    update_params = {
+        "type": "object",
+        "properties": {
+            "id": {"type": "string", "description": "Record ID to update."},
+            "text": {"type": "string", "description": "New text value."},
+            "tags": {"type": "array", "items": {"type": "string"}, "description": "New tags list."},
+            "confidence": {"type": "number", "minimum": 0, "maximum": 1, "description": "New confidence value."},
+        },
+        "required": ["id"]
+    }
+    list_skills_params = {"type": "object", "properties": {}}
+
+    def list_skills_handler(args: dict[str, Any]) -> str:
+        import yaml as _yaml
+        from jarvis.runtime import current_context
+        ctx = current_context.get()
+        skills_dirs = ["skills/"]
+        if ctx and hasattr(ctx, "config"):
+            skills_dirs = getattr(ctx.config, "skills_dirs", skills_dirs)
+        skills: list[dict[str, str]] = []
+        seen: set[str] = set()
+        for d in skills_dirs:
+            dir_path = base / d
+            if not dir_path.exists():
+                continue
+            for entry in sorted(dir_path.iterdir()):
+                if not entry.is_dir():
+                    continue
+                skill_file = entry / "SKILL.md"
+                if not skill_file.exists():
+                    continue
+                content = skill_file.read_text(encoding="utf-8")
+                parts = content.split("---", 2)
+                desc = ""
+                if len(parts) >= 3:
+                    try:
+                        meta = _yaml.safe_load(parts[1]) or {}
+                        desc = meta.get("description", "")
+                    except Exception:
+                        pass
+                name = entry.name
+                if name not in seen:
+                    skills.append({"name": name, "description": str(desc), "uri": f"skill://{name}"})
+                    seen.add(name)
+        import json as _json
+        return _json.dumps(skills)
+
 
     async def spawn_subagent_handler(args: dict[str, Any]) -> str:
         from jarvis.runtime import current_context
@@ -396,7 +486,12 @@ def builtin_tools(root: Path | str = ".") -> list[Tool]:
         Tool("Bash", "Run a shell command. Policy hooks decide whether it is allowed.", object_params, run_command),
         Tool("memory_search", "Search semantic memory for previously stored facts and history.", search_params, search_semantic_memory_tool),
         Tool("memory_purge", "Purge specific items or tags from semantic memory.", purge_params, purge_semantic_memory_tool),
-        Tool("memory_store", "Store a fact or piece of information in semantic memory.", store_params, store_semantic_memory_tool),
+        Tool("memory_store", "Store a fact or procedure in semantic memory.", store_params, store_semantic_memory_tool),
+        Tool("memory_check_redundancy", "Find duplicate or near-duplicate memories via embedding similarity.", check_redundancy_params, check_redundancy_tool),
+        Tool("memory_distill_now", "Force-distill undistilled session messages into semantic memory.", distill_now_params, distill_now_tool),
+        Tool("memory_merge", "Merge two similar memory records into one.", merge_params, merge_memory_tool),
+        Tool("memory_update", "Edit text, tags, or confidence of an existing memory record.", update_params, update_memory_tool),
+        Tool("list_skills", "List available skills from configured skill directories. Returns skill:// URIs.", list_skills_params, list_skills_handler),
         Tool("task", "Spawn a collaborative subagent to handle a specific task.", spawn_subagent_params, spawn_subagent_handler),
         Tool("message", "Send a message to an active subagent.", send_subagent_message_params, send_subagent_message_handler),
         Tool("close", "Close an active subagent and clean up resources.", close_subagent_params, close_subagent_handler),

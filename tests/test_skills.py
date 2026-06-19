@@ -1,146 +1,153 @@
 import pytest
 import json
 from pathlib import Path
-from jarvis.tools import ToolRegistry
+from jarvis.tools import ToolRegistry, builtin_tools
 from jarvis.models.base import Message
-from types import SimpleNamespace
+from jarvis.runtime import AgentContext, RuntimeConfig, SessionState, current_context
+
 
 MOCK_SKILL_MD = """---
 name: mock_git
 description: Mock git commands
-tools:
-  mock_commit:
-    description: commit files
-    script: scripts/commit.sh
-    parameters:
-      type: object
-      properties:
-        message:
-          type: string
-      required: [message]
+tools: {}
 ---
 Always commit files with clean messages.
 """
 
+
 @pytest.mark.asyncio
-async def test_skills_loader(tmp_path: Path) -> None:
-    from jarvis.skills import SkillManager
-    skill_dir = tmp_path / "skills" / "mock_git"
-    skill_dir.mkdir(parents=True)
-    (skill_dir / "SKILL.md").write_text(MOCK_SKILL_MD, encoding="utf-8")
-    
-    scripts_dir = skill_dir / "scripts"
-    scripts_dir.mkdir()
-    script_file = scripts_dir / "commit.sh"
-    # Verifies uppercase environment variable convention is active
-    script_file.write_text("#!/bin/sh\necho \"committed: $MESSAGE\"", encoding="utf-8")
-    script_file.chmod(0o755)
-    
-    manager = SkillManager(skills_root=str(tmp_path / "skills"))
-    
-    ctx = SimpleNamespace(
-        config=SimpleNamespace(allowed_skills=["mock_git"]),
-        tools=ToolRegistry()
+async def test_list_skills(tmp_path: Path) -> None:
+    """list_skills returns skill:// URIs for all skills in configured dirs."""
+    skills_dir = tmp_path / "skills" / "mock_git"
+    skills_dir.mkdir(parents=True)
+    (skills_dir / "SKILL.md").write_text(MOCK_SKILL_MD)
+
+    tools = ToolRegistry(builtin_tools(tmp_path))
+    ctx = AgentContext(
+        config=RuntimeConfig(skills_dirs=["skills/"]),
+        session=SessionState(id="s1"),
+        model=None,
+        tools=tools,
+        hooks=[],
     )
-    
-    skills = await manager.load_allowed_skills(ctx)
-    assert len(skills) == 1
-    assert skills[0].name == "mock_git"
-    
-    # Run mock script tool
-    committed_tool = ctx.tools._tools["mock_commit"]
-    res = await committed_tool.handler({"message": "initial commit"})
-    assert "committed: initial commit" in res
-    
-    # Test prompt hook
-    from jarvis.hooks import SkillInstructionsHook
-    hook = SkillInstructionsHook(skills)
-    msgs = [Message(role="system", content="System:")]
-    res = await hook.before_model(ctx, msgs)
-    assert "Always commit files with clean messages." in res.messages[0].content
-    
-    # Test prompt duplication prevention in subsequent model invocations
-    res2 = await hook.before_model(ctx, res.messages)
-    assert res2.messages[0].content.count("Always commit files with clean messages.") == 1
+    token = current_context.set(ctx)
+    try:
+        handler = tools._tools["list_skills"].handler
+        result = handler({})
+        parsed = json.loads(result)
+        assert len(parsed) == 1
+        assert parsed[0]["name"] == "mock_git"
+        assert parsed[0]["uri"] == "skill://mock_git"
+        assert "Mock git" in parsed[0]["description"]
+    finally:
+        current_context.reset(token)
 
 
 @pytest.mark.asyncio
-async def test_skills_loader_malformed_yaml(tmp_path: Path) -> None:
-    from jarvis.skills import SkillManager
-    
-    # 1. Mock valid skill
-    skill_dir = tmp_path / "skills" / "mock_git"
-    skill_dir.mkdir(parents=True)
-    (skill_dir / "SKILL.md").write_text(MOCK_SKILL_MD, encoding="utf-8")
-    
-    # 2. Mock malformed skill
-    skill_dir_malformed = tmp_path / "skills" / "malformed_skill"
-    skill_dir_malformed.mkdir(parents=True)
-    (skill_dir_malformed / "SKILL.md").write_text("---\nmalformed: :\n---\nHello", encoding="utf-8")
-    
-    manager = SkillManager(skills_root=str(tmp_path / "skills"))
-    
-    ctx = SimpleNamespace(
-        config=SimpleNamespace(allowed_skills=["mock_git", "malformed_skill"]),
-        tools=ToolRegistry()
+async def test_read_skill_uri(tmp_path: Path) -> None:
+    """read(skill://name) resolves to SKILL.md and returns content + path."""
+    skills_dir = tmp_path / "skills" / "mock_git"
+    skills_dir.mkdir(parents=True)
+    (skills_dir / "SKILL.md").write_text(MOCK_SKILL_MD)
+
+    tools = ToolRegistry(builtin_tools(tmp_path))
+    ctx = AgentContext(
+        config=RuntimeConfig(skills_dirs=["skills/"]),
+        session=SessionState(id="s1"),
+        model=None,
+        tools=tools,
+        hooks=[],
     )
-    
-    skills = await manager.load_allowed_skills(ctx)
-    # Should skip the malformed skill and only load mock_git
-    assert len(skills) == 1
-    assert skills[0].name == "mock_git"
+    token = current_context.set(ctx)
+    try:
+        handler = tools._tools["read"].handler
+        result = handler({"path": "skill://mock_git"})
+        assert "Always commit files with clean messages." in result
+        assert "[skill path:" in result
+        assert "mock_git" in result
+    finally:
+        current_context.reset(token)
 
 
 @pytest.mark.asyncio
-async def test_skills_path_traversal(tmp_path: Path) -> None:
-    from jarvis.skills import SkillManager
-    skill_dir = tmp_path / "skills" / "mock_git"
-    skill_dir.mkdir(parents=True)
-    
-    manager = SkillManager(skills_root=str(tmp_path / "skills"))
-    
-    handler = manager._create_tool_handler(skill_dir, "../outside.sh")
-    res = await handler({})
-    assert "Path escape detected" in res
+async def test_read_skill_not_found(tmp_path: Path) -> None:
+    """read(skill://nonexistent) returns error."""
+    tools = ToolRegistry(builtin_tools(tmp_path))
+    ctx = AgentContext(
+        config=RuntimeConfig(skills_dirs=["skills/"]),
+        session=SessionState(id="s1"),
+        model=None,
+        tools=tools,
+        hooks=[],
+    )
+    token = current_context.set(ctx)
+    try:
+        handler = tools._tools["read"].handler
+        result = handler({"path": "skill://nonexistent"})
+        assert "Error" in result
+        assert "not found" in result
+    finally:
+        current_context.reset(token)
 
 
 @pytest.mark.asyncio
-async def test_skills_exit_code_failure(tmp_path: Path) -> None:
-    from jarvis.skills import SkillManager
-    skill_dir = tmp_path / "skills" / "mock_git"
-    skill_dir.mkdir(parents=True)
-    
-    scripts_dir = skill_dir / "scripts"
-    scripts_dir.mkdir()
-    script_file_fail = scripts_dir / "fail.sh"
-    script_file_fail.write_text("#!/bin/sh\necho \"some error output\"\nexit 42", encoding="utf-8")
-    script_file_fail.chmod(0o755)
-    
-    manager = SkillManager(skills_root=str(tmp_path / "skills"))
-    
-    handler_fail = manager._create_tool_handler(skill_dir, "scripts/fail.sh")
-    res = await handler_fail({})
-    assert "failed with exit code 42" in res
-    assert "some error output" in res
+async def test_list_skills_multiple_dirs(tmp_path: Path) -> None:
+    """list_skills scans multiple configured directories."""
+    for d in [".claude/skills/alpha", ".codex/skills/beta"]:
+        dir_path = tmp_path / d
+        dir_path.mkdir(parents=True)
+        (dir_path / "SKILL.md").write_text(f"---\nname: {d.split('/')[-2]}_{d.split('/')[-1]}\ndescription: Test skill\ntools: {{}}\n---\nBody.")
+
+    tools = ToolRegistry(builtin_tools(tmp_path))
+    ctx = AgentContext(
+        config=RuntimeConfig(skills_dirs=[".claude/skills/", ".codex/skills/"]),
+        session=SessionState(id="s1"),
+        model=None,
+        tools=tools,
+        hooks=[],
+    )
+    token = current_context.set(ctx)
+    try:
+        handler = tools._tools["list_skills"].handler
+        result = handler({})
+        parsed = json.loads(result)
+        assert len(parsed) == 2
+        names = {s["name"] for s in parsed}
+        assert "alpha" in names
+        assert "beta" in names
+    finally:
+        current_context.reset(token)
 
 
 @pytest.mark.asyncio
-async def test_skills_complex_serialization(tmp_path: Path) -> None:
-    from jarvis.skills import SkillManager
-    skill_dir = tmp_path / "skills" / "mock_git"
-    skill_dir.mkdir(parents=True)
-    
-    scripts_dir = skill_dir / "scripts"
-    scripts_dir.mkdir()
-    script_file_complex = scripts_dir / "complex.sh"
-    script_file_complex.write_text("#!/bin/sh\necho \"data: $DATA\"", encoding="utf-8")
-    script_file_complex.chmod(0o755)
-    
-    manager = SkillManager(skills_root=str(tmp_path / "skills"))
-    
-    handler_complex = manager._create_tool_handler(skill_dir, "scripts/complex.sh")
-    res = await handler_complex({"data": {"key": "val", "list": [1, 2]}})
-    assert "data: " in res
-    # Parse the json printed by the shell script output to verify it was serialized correctly
-    parsed = json.loads(res.split("data: ")[1].strip())
-    assert parsed == {"key": "val", "list": [1, 2]}
+async def test_read_skill_malformed_yaml(tmp_path: Path) -> None:
+    """read(skill://name) still reads content even with bad YAML frontmatter."""
+    skills_dir = tmp_path / "skills" / "bad_skill"
+    skills_dir.mkdir(parents=True)
+    (skills_dir / "SKILL.md").write_text("not valid yaml frontmatter\n---\nSome instructions.")
+
+    tools = ToolRegistry(builtin_tools(tmp_path))
+    ctx = AgentContext(
+        config=RuntimeConfig(skills_dirs=["skills/"]),
+        session=SessionState(id="s1"),
+        model=None,
+        tools=tools,
+        hooks=[],
+    )
+    token = current_context.set(ctx)
+    try:
+        handler = tools._tools["read"].handler
+        result = handler({"path": "skill://bad_skill"})
+        assert "Some instructions." in result
+        assert "[skill path:" in result
+    finally:
+        current_context.reset(token)
+
+
+@pytest.mark.asyncio
+async def test_slugify_skill_name() -> None:
+    from jarvis.skills import slugify_skill_name
+    assert slugify_skill_name("Deploy to Pi") == "deploy-to-pi"
+    assert slugify_skill_name("Hello World!") == "hello-world"
+    assert slugify_skill_name("") == "learned-procedure"
+    assert slugify_skill_name("A" * 60)[:48] == "a" * 48
