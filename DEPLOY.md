@@ -33,7 +33,7 @@ rsync -avz --progress \
   --exclude 'node_modules' \
   --exclude '.DS_Store' \
   --exclude 'config/' \
-  ./ allen@192.168.0.159:/home/allen/jarvis/
+  ./ allen@192.168.0.159:/mnt/pi-data/jarvis/
 ```
 
 > **Important:** `config/` is excluded because the remote has its own configs (QQ keys, MCP secrets, proxy settings). Never rsync local config over remote config.
@@ -133,7 +133,7 @@ The service file is at `jarvis.service` in the project root. Install it:
 
 ```bash
 ssh allen@192.168.0.159 '
-  sudo ln -sf /home/allen/jarvis/jarvis.service /etc/systemd/system/jarvis.service
+  sudo ln -sf /mnt/pi-data/jarvis/jarvis.service /etc/systemd/system/jarvis.service
   sudo systemctl daemon-reload
   sudo systemctl enable jarvis
   sudo systemctl start jarvis
@@ -164,7 +164,7 @@ rsync -avz --quiet \
   --exclude '.git' --exclude '.venv' --exclude '__pycache__' --exclude 'storage' \
   --exclude '*.pyc' --exclude '.pytest_cache' --exclude 'node_modules' --exclude '.DS_Store' \
   --exclude 'config/' \
-  ./ allen@192.168.0.159:/home/allen/jarvis/ && \
+  ./ allen@192.168.0.159:/mnt/pi-data/jarvis/ && \
 ssh allen@192.168.0.159 'sudo systemctl restart jarvis'
 ```
 
