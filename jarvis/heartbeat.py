@@ -7,7 +7,9 @@ import json
 import logging
 import time
 from pathlib import Path
-from typing import Any, Callable, Awaitable
+from typing import Any, Awaitable, Callable
+
+from jarvis.models.base import Message
 
 logger = logging.getLogger(__name__)
 
@@ -19,7 +21,7 @@ class HeartbeatManager:
         self,
         workspace: str = ".",
         interval_secs: int = 300,
-        submit_fn: Callable[[str, str], Awaitable[str]] | None = None,
+        submit_fn: Callable[[str, Message], Awaitable[Message]] | None = None,
         storage_dir: str = "storage/heartbeat",
     ) -> None:
         self.workspace = Path(workspace)
@@ -51,11 +53,10 @@ class HeartbeatManager:
 
         timestamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         results: list[dict[str, Any]] = []
-
         for task in tasks:
             try:
-                result = await self.submit_fn("heartbeat", task)
-                results.append({"task": task, "status": "ok", "result": result[:500]})
+                result = await self.submit_fn("heartbeat", Message(role="user", content=task))
+                results.append({"task": task, "status": "ok", "result": result.content[:500] if result.content else ""})
             except Exception as exc:
                 results.append({"task": task, "status": "error", "error": str(exc)})
 

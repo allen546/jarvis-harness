@@ -115,8 +115,8 @@ async def main() -> None:
     tasks: list[asyncio.Task[None]] = [cron_task]
     qq_channel: QQChannel | None = None
     if config.channels.qq.enabled:
-        async def _qq_handler(session_id: str, text: str) -> str:
-            return await _manager.submit_and_collect(session_id, text)
+        async def _qq_handler(session_id: str, message: Message) -> Message:
+            return await _manager.submit_and_collect(session_id, message)
 
         qq_channel = QQChannel(
             app_id=config.channels.qq.app_id,
@@ -125,6 +125,9 @@ async def main() -> None:
             on_message=_qq_handler,
             main_loop=asyncio.get_running_loop(),
             allowed_senders=config.channels.qq.allowed_senders,
+            supported_media=config.channels.qq.supported_media,
+            max_download_size_mb=config.channels.qq.max_download_size_mb,
+            proxy_env=proxy_env,
         )
         qq_task = asyncio.create_task(qq_channel.run())
         tasks.append(qq_task)
@@ -134,8 +137,8 @@ async def main() -> None:
     heartbeat_mgr = None
     if config.harness.heartbeat.enabled:
         from jarvis.heartbeat import HeartbeatManager
-        async def _heartbeat_submit(session_id: str, text: str) -> str:
-            return await _manager.submit_and_collect(session_id, text)
+        async def _heartbeat_submit(session_id: str, message: Message) -> Message:
+            return await _manager.submit_and_collect(session_id, message)
         heartbeat_mgr = HeartbeatManager(
             workspace=config.harness.heartbeat.workspace,
             interval_secs=config.harness.heartbeat.interval_secs,

@@ -40,15 +40,15 @@ class SessionManager:
         async for event in session.submit(message):
             yield event
 
-    async def submit_and_collect(self, session_id: str, text: str) -> str:
-        """Submit a message and return the final assistant text."""
-        content = ""
-        async for event in self.submit(session_id, Message(role="user", content=text)):
+    async def submit_and_collect(self, session_id: str, message: Message) -> Message:
+        """Submit a message and return the final assistant Message."""
+        result = Message(role="assistant", content="")
+        async for event in self.submit(session_id, message):
             if isinstance(event, ErrorEvent):
                 raise RuntimeError(event.message)
             if isinstance(event, MessageEvent):
-                content = event.message.content
-        return content
+                result = event.message
+        return result
 
     async def close(self, session_id: str) -> None:
         session = self.sessions.pop(session_id, None)

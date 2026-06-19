@@ -5,6 +5,7 @@ import json
 import asyncio
 from pathlib import Path
 from jarvis.heartbeat import HeartbeatManager
+from jarvis.models.base import Message
 
 
 def test_read_tasks_empty(tmp_path: Path):
@@ -32,9 +33,9 @@ async def test_tick_executes_tasks(tmp_path: Path):
     (tmp_path / "HEARTBEAT.md").write_text("Task A\nTask B\n")
     executed: list[str] = []
 
-    async def fake_submit(session_id: str, text: str) -> str:
-        executed.append(text)
-        return f"done: {text}"
+    async def fake_submit(session_id: str, message: Message) -> Message:
+        executed.append(message.content)
+        return Message(role="assistant", content=f"done: {message.content}")
 
     mgr = HeartbeatManager(
         workspace=str(tmp_path),
@@ -55,9 +56,9 @@ async def test_tick_executes_tasks(tmp_path: Path):
 async def test_tick_no_tasks_noop(tmp_path: Path):
     executed: list[str] = []
 
-    async def fake_submit(session_id: str, text: str) -> str:
-        executed.append(text)
-        return "ok"
+    async def fake_submit(session_id: str, message: Message) -> Message:
+        executed.append(message.content)
+        return Message(role="assistant", content="ok")
 
     mgr = HeartbeatManager(
         workspace=str(tmp_path),
@@ -72,7 +73,7 @@ async def test_tick_no_tasks_noop(tmp_path: Path):
 async def test_tick_error_handling(tmp_path: Path):
     (tmp_path / "HEARTBEAT.md").write_text("failing task\n")
 
-    async def bad_submit(session_id: str, text: str) -> str:
+    async def bad_submit(session_id: str, message: Message) -> Message:
         raise RuntimeError("boom")
 
     mgr = HeartbeatManager(
@@ -99,8 +100,8 @@ async def test_tick_no_submit_fn(tmp_path: Path):
 async def test_run_cancels_cleanly(tmp_path: Path):
     (tmp_path / "HEARTBEAT.md").write_text("task\n")
 
-    async def fake_submit(session_id: str, text: str) -> str:
-        return "ok"
+    async def fake_submit(session_id: str, message: Message) -> Message:
+        return Message(role="assistant", content="ok")
 
     mgr = HeartbeatManager(
         workspace=str(tmp_path),

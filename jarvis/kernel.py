@@ -75,7 +75,7 @@ class AgentKernel:
                         yield ErrorEvent(session_id=ctx.session.id, message=before_tool.reason or "turn stopped")
                         return
                     if before_tool.skip_tool:
-                        result = ToolResult(tool_call.call_id, tool_call.tool_name, before_tool.reason or "tool skipped", True)
+                        result = ToolResult(call_id=tool_call.call_id, tool_name=tool_call.tool_name, content=before_tool.reason or "tool skipped", is_error=True)
                     else:
                         result = await ctx.tools.execute(tool_call)
                     yield ToolResultEvent(
@@ -85,7 +85,7 @@ class AgentKernel:
                         content=result.content,
                         is_error=result.is_error,
                     )
-                    messages.append(Message(role="tool", content=result.content, metadata={"tool_call_id": tool_call.call_id, "tool_name": tool_call.tool_name}))
+                    messages.append(Message(role="tool", content=result.content, attachments=result.attachments, metadata={"tool_call_id": tool_call.call_id, "tool_name": tool_call.tool_name}))
                     after_tool = await self._run_after_tool(ctx, tool_call, result)
                     if after_tool.stop:
                         yield ErrorEvent(session_id=ctx.session.id, message=after_tool.reason or "turn stopped")

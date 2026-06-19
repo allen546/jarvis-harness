@@ -162,7 +162,9 @@ def create_agent_task(
         manager = SessionManager()
 
     async def handler() -> str:
-        return await manager.submit_and_collect(session_id, prompt)
+        from jarvis.models.base import Message
+        result = await manager.submit_and_collect(session_id, Message(role="user", content=prompt))
+        return result.content or ""
 
     return CronTask(name=name, schedule=schedule, handler=handler)
 

@@ -25,14 +25,20 @@ def get_model_class(name: str) -> Type['BaseModelClient']:
 
 @dataclass(slots=True)
 class Attachment:
-    file_path: str
     mime_type: str
-    description: Optional[str] = None
+    url: str | None = None
+    file_path: str | None = None
+    description: str | None = None
+
+    def __post_init__(self) -> None:
+        if not self.url and not self.file_path:
+            raise ValueError("Attachment requires url or file_path")
 
     def model_dump(self) -> dict[str, Any]:
         return {
-            "file_path": self.file_path,
             "mime_type": self.mime_type,
+            "url": self.url,
+            "file_path": self.file_path,
             "description": self.description,
         }
 

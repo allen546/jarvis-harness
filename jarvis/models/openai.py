@@ -2,11 +2,42 @@ import importlib
 import json
 import os
 from typing import TYPE_CHECKING, Any, AsyncGenerator, Optional
-from jarvis.models.base import BaseModelClient, Message, ModelResponse, ToolCall, register_model
+from jarvis.models.base import Attachment, BaseModelClient, Message, ModelResponse, ToolCall, register_model
 from jarvis.retry import retry_with_backoff
 
 if TYPE_CHECKING:
     from jarvis.config import SessionConfig
+
+
+def _attachment_to_content_block(att: Attachment) -> dict[str, Any] | None:
+    mime = att.mime_type
+    url = att.url
+    if not url:
+        return None
+    if mime.startswith("image/"):
+        return {"type": "image_url", "image_url": {"url": url}}
+    if mime.startswith("audio/"):
+        b64 = url.split(",", 1)[1] if "," in url else ""
+        fmt = mime.split("/", 1)[1].split(";")[0]
+        return {"type": "input_audio", "input_audio": {"data": b64, "format": fmt}}
+    if mime.startswith("video/"):
+        return {"type": "video_url", "video_url": {"url": url}}
+    return None
+
+
+def _build_openai_content(m: Message) -> str | list[dict[str, Any]]:
+    """Build OpenAI content field: plain string when no attachments, content blocks otherwise."""
+    if not m.attachments:
+        return m.content
+    blocks: list[dict[str, Any]] = []
+    if m.content:
+        blocks.append({"type": "text", "text": m.content})
+    for att in m.attachments:
+        block = _attachment_to_content_block(att)
+        if block:
+            blocks.append(block)
+    return blocks
+
 
 @register_model("openai")
 class OpenAIClient(BaseModelClient):
@@ -26,20 +57,23 @@ class OpenAIClient(BaseModelClient):
         self.temperature = temperature
         self.extra_params = extra_params or {}
         self._client = None
+        self.supported_media: list[str] = []
 
     @classmethod
     def from_cfg(cls, cfg: SessionConfig) -> OpenAIClient:
         extra = cfg.model.extra_params or {}
         api_key = extra.get("api_key") or os.getenv(f"{cfg.model.provider.upper()}_API_KEY", "mock-key")
         forward_params = {k: v for k, v in extra.items() if k not in ("api_key", "base_url")}
-        return cls(
+        client = cls(
             api_key=api_key,
             model_name=cfg.model.model_name,
             base_url=extra.get("base_url"),
             max_tokens=cfg.model.max_tokens,
             temperature=cfg.model.temperature,
-            extra_params=forward_params
+            extra_params=forward_params,
         )
+        client.supported_media = list(cfg.model.supported_media)
+        return client
 
     async def _get_client(self) -> Any:
         if self._client is None:
@@ -55,7 +89,7 @@ class OpenAIClient(BaseModelClient):
         client = await self._get_client()
         openai_msgs: list[dict[str, Any]] = []
         for m in messages:
-            msg: dict[str, Any] = {"role": m.role, "content": m.content}
+            msg: dict[str, Any] = {"role": m.role, "content": _build_openai_content(m)}
             if m.role == "assistant" and m.metadata and "tool_calls" in m.metadata:
                 msg["tool_calls"] = [
                     {"id": tc["call_id"], "type": "function", "function": {"name": tc["tool_name"], "arguments": json.dumps(tc["arguments"])}}
@@ -99,7 +133,7 @@ class OpenAIClient(BaseModelClient):
         client = await self._get_client()
         openai_msgs: list[dict[str, Any]] = []
         for m in messages:
-            msg: dict[str, Any] = {"role": m.role, "content": m.content}
+            msg: dict[str, Any] = {"role": m.role, "content": _build_openai_content(m)}
             if m.role == "assistant" and m.metadata and "tool_calls" in m.metadata:
                 msg["tool_calls"] = [
                     {"id": tc["call_id"], "type": "function", "function": {"name": tc["tool_name"], "arguments": json.dumps(tc["arguments"])}}

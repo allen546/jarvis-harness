@@ -8,8 +8,13 @@ class ModelConfig(BaseModel):
     model_name: str
     temperature: float = 0.7
     max_tokens: Optional[int] = None
+    supported_media: list[str] = Field(default_factory=list)
+    max_download_size_mb: int = 10
+    video_chunk_secs: int = 10
+    audio_chunk_secs: int = 60
+    text_chunk_lines: int = 200
+    pdf_chunk_pages: int = 2
     extra_params: dict[str, Any] = Field(default_factory=dict)
-
 class EmbeddingConfig(BaseModel):
     enabled: bool = False
     url: str = ""                    # HTTP endpoint; empty = local char-ngram fallback
@@ -42,6 +47,8 @@ class QQChannelConfig(BaseModel):
     app_secret: str = ""
     intents: list[str] = Field(default_factory=lambda: ["public_messages"])
     allowed_senders: list[str] = Field(default_factory=list)
+    supported_media: list[str] = Field(default_factory=list)
+    max_download_size_mb: int = 10
 
 class CronTaskConfig(BaseModel):
     name: str
