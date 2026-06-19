@@ -3,12 +3,11 @@ from __future__ import annotations
 import asyncio
 import logging
 import threading
-from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
-from jarvis.config import JarvisConfig, load_config
+from jarvis.config import load_config
 from jarvis.cron import CronScheduler, tasks_from_config
 from jarvis.events import ErrorEvent, event_to_dict
 from jarvis.models.base import Message

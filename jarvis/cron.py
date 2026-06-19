@@ -63,9 +63,6 @@ class CronTask:
         }
 
 
-@dataclass
-class CronState:
-    tasks: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
 class CronScheduler:

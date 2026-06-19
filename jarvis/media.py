@@ -6,105 +6,46 @@ import subprocess
 from pathlib import Path
 
 
-MEDIA_EXTENSIONS: dict[str, str] = {
-    ".mp4": "video",
-    ".mov": "video",
-    ".avi": "video",
-    ".mkv": "video",
-    ".webm": "video",
-    ".mp3": "audio",
-    ".wav": "audio",
-    ".ogg": "audio",
-    ".flac": "audio",
-    ".aac": "audio",
-    ".m4a": "audio",
-    ".jpg": "image",
-    ".jpeg": "image",
-    ".png": "image",
-    ".gif": "image",
-    ".webp": "image",
-    ".bmp": "image",
+# ponytail: only extensions that drive non-text behavior need entries here.
+# Everything else falls through to "text" via the default.
+_NON_TEXT_EXTENSIONS: dict[str, str] = {
+    ".mp4": "video", ".mov": "video", ".avi": "video", ".mkv": "video", ".webm": "video",
+    ".mp3": "audio", ".wav": "audio", ".ogg": "audio", ".flac": "audio", ".aac": "audio", ".m4a": "audio",
+    ".jpg": "image", ".jpeg": "image", ".png": "image", ".gif": "image", ".webp": "image", ".bmp": "image",
     ".pdf": "document",
-    ".txt": "text",
-    ".py": "text",
-    ".md": "text",
-    ".js": "text",
-    ".ts": "text",
-    ".html": "text",
-    ".css": "text",
-    ".json": "text",
-    ".yaml": "text",
-    ".yml": "text",
-    ".xml": "text",
-    ".csv": "text",
-    ".log": "text",
-    ".sh": "text",
-    ".rb": "text",
-    ".go": "text",
-    ".rs": "text",
-    ".c": "text",
-    ".cpp": "text",
-    ".java": "text",
-    ".kt": "text",
-    ".swift": "text",
-    ".php": "text",
-    ".sql": "text",
-    ".toml": "text",
-    ".ini": "text",
-    ".cfg": "text",
-    ".conf": "text",
 }
 
-MIME_MAP: dict[str, str] = {
-    "video": "video/mp4",
-    "audio": "audio/mpeg",
-    "image": "image/jpeg",
-    "document": "application/pdf",
-    "text": "text/plain",
+# ponytail: extension → MIME, used by get_mime_type when a path is given.
+EXT_MIME: dict[str, str] = {
+    ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".gif": "image/gif",
+    ".webp": "image/webp", ".bmp": "image/bmp",
+    ".mp3": "audio/mpeg", ".wav": "audio/wav", ".ogg": "audio/ogg", ".flac": "audio/flac",
+    ".aac": "audio/aac", ".m4a": "audio/mp4",
+    ".mp4": "video/mp4", ".mov": "video/quicktime", ".avi": "video/x-msvideo",
+    ".mkv": "video/x-matroska", ".webm": "video/webm",
+    ".pdf": "application/pdf",
+}
+
+_MEDIA_MIME: dict[str, str] = {
+    "video": "video/mp4", "audio": "audio/mpeg", "image": "image/jpeg",
+    "document": "application/pdf", "text": "text/plain",
 }
 
 
 def detect_media_type(path: Path) -> str:
-    ext = path.suffix.lower()
-    return MEDIA_EXTENSIONS.get(ext, "text")
+    return _NON_TEXT_EXTENSIONS.get(path.suffix.lower(), "text")
 
 
 def get_mime_type(media_type: str, path: Path | None = None) -> str:
     if path:
-        ext = path.suffix.lower()
-        if ext == ".jpg":
-            return "image/jpeg"
-        if ext == ".jpeg":
-            return "image/jpeg"
-        if ext == ".png":
-            return "image/png"
-        if ext == ".gif":
-            return "image/gif"
-        if ext == ".webp":
-            return "image/webp"
-        if ext == ".mp3":
-            return "audio/mpeg"
-        if ext == ".wav":
-            return "audio/wav"
-        if ext == ".ogg":
-            return "audio/ogg"
-        if ext == ".flac":
-            return "audio/flac"
-        if ext == ".mp4":
-            return "video/mp4"
-        if ext == ".mov":
-            return "video/quicktime"
-        if ext == ".pdf":
-            return "application/pdf"
-    return MIME_MAP.get(media_type, "application/octet-stream")
+        return EXT_MIME.get(path.suffix.lower(), _MEDIA_MIME.get(media_type, "application/octet-stream"))
+    return _MEDIA_MIME.get(media_type, "application/octet-stream")
 
 
 def enforce_size_limit(size_bytes: int, max_mb: int) -> None:
     limit = max_mb * 1024 * 1024
     if size_bytes > limit:
-        raise ValueError(
-            f"File size {size_bytes} bytes exceeds limit of {max_mb} MB"
-        )
+        raise ValueError(f"File size {size_bytes} bytes exceeds limit of {max_mb} MB")
 
 
 def to_data_uri(data: bytes, mime_type: str) -> str:
@@ -118,48 +59,68 @@ def chunk_count(total: float, chunk_size: float) -> int:
     return math.ceil(total / chunk_size)
 
 
-def extract_lines(path: Path, start: int, count: int) -> str:
-    lines = path.read_text(encoding="utf-8").splitlines()
-    return "\n".join(lines[start : start + count])
-
-
 def extract_pdf_pages(path: Path, start: int, count: int) -> str:
     import PyPDF2
-
     with open(path, "rb") as f:
         reader = PyPDF2.PdfReader(f)
         pages = reader.pages
         end = min(start + count, len(pages))
-        texts = []
-        for i in range(start, end):
-            texts.append(pages[i].extract_text() or "")
+        texts = [pages[i].extract_text() or "" for i in range(start, end)]
     return "\n\n--- PAGE BREAK ---\n\n".join(texts)
 
 
 def extract_media_chunk(path: Path, start_secs: float, duration_secs: float) -> tuple[bytes, str]:
     media_type = detect_media_type(path)
-    if media_type == "audio":
-        out_mime = "audio/mp4"
-        fmt = "mp4"
-    else:
-        out_mime = get_mime_type(media_type, path)
-        fmt = "mp4"
+    # ponytail: always mux as mp4 — it's the ffmpeg default container for copy mode.
+    # audio gets audio/mp4, video keeps original MIME.
+    out_mime = "audio/mp4" if media_type == "audio" else get_mime_type(media_type, path)
     cmd = [
-        "ffmpeg",
-        "-i", str(path),
-        "-ss", str(start_secs),
-        "-t", str(duration_secs),
-        "-c", "copy",
-        "-f", fmt,
-        "-",
+        "ffmpeg", "-i", str(path),
+        "-ss", str(start_secs), "-t", str(duration_secs),
+        "-c", "copy", "-f", "mp4", "-",
     ]
     result = subprocess.run(cmd, capture_output=True, timeout=120)
     if result.returncode != 0:
-        raise RuntimeError(
-            f"ffmpeg failed: {result.stderr.decode('utf-8', errors='replace')}"
-        )
+        raise RuntimeError(f"ffmpeg failed: {result.stderr.decode('utf-8', errors='replace')}")
     return result.stdout, out_mime
 
+
+def get_media_info(path: Path) -> dict:
+    """Return media metadata dict."""
+    media_type = detect_media_type(path)
+    mime = get_mime_type(media_type, path)
+    info: dict = {"media_type": media_type, "mime_type": mime}
+
+    if media_type == "text":
+        info["total_lines"] = len(path.read_text(encoding="utf-8", errors="replace").splitlines())
+        info["size_bytes"] = path.stat().st_size
+    elif media_type == "document":
+        import PyPDF2
+        try:
+            with open(path, "rb") as f:
+                info["total_pages"] = len(PyPDF2.PdfReader(f).pages)
+        except Exception:
+            info["total_pages"] = 0
+    elif media_type in ("video", "audio"):
+        try:
+            result = subprocess.run(
+                ["ffprobe", "-v", "quiet", "-print_format", "json", "-show_format", "-show_streams", str(path)],
+                capture_output=True, text=True, timeout=30,
+            )
+            if result.returncode == 0:
+                probe = __import__("json").loads(result.stdout)
+                info["duration_secs"] = float(probe.get("format", {}).get("duration", 0))
+                for stream in probe.get("streams", []):
+                    if stream.get("codec_type") == "video":
+                        info["width"] = int(stream.get("width", 0))
+                        info["height"] = int(stream.get("height", 0))
+                        break
+        except Exception:
+            pass
+    else:
+        info["size_bytes"] = path.stat().st_size
+
+    return info
 
 def get_media_info(path: Path) -> dict:
     """Return media metadata dict."""

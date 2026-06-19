@@ -26,14 +26,6 @@ class RuntimeConfig:
     max_repeated_tool_calls: int = 3
     repeated_content_threshold: float = 0.8
     repeated_content_window: int = 3
-    # embedding
-    embedding_enabled: bool = False
-    embedding_url: str = ""
-    embedding_dimensions: int = 256
-    # heartbeat
-    heartbeat_enabled: bool = False
-    heartbeat_interval_secs: int = 300
-    heartbeat_workspace: str = "."
 
 
 @dataclass(slots=True)
@@ -205,12 +197,6 @@ def context_from_config(config: SessionConfig, tools: ToolRegistry, hooks: list[
             max_repeated_tool_calls=h.max_repeated_tool_calls,
             repeated_content_threshold=h.repeated_content_threshold,
             repeated_content_window=h.repeated_content_window,
-            embedding_enabled=h.embedding.enabled,
-            embedding_url=h.embedding.url,
-            embedding_dimensions=h.embedding.dimensions,
-            heartbeat_enabled=h.heartbeat.enabled,
-            heartbeat_interval_secs=h.heartbeat.interval_secs,
-            heartbeat_workspace=h.heartbeat.workspace,
         ),
         session=SessionState(id=config.session_id),
         model=model_cls.from_cfg(config),

@@ -1,15 +1,6 @@
-# Jarvis models package
-from jarvis.models.base import register_model, get_model_class
-from jarvis.models.openai import OpenAIClient
-from jarvis.models.openai_compatible import OpenAICompatibleClient
-from jarvis.models.anthropic import AnthropicClient
-from jarvis.models.gemini import GeminiClient
-
-__all__ = [
-    "register_model",
-    "get_model_class",
-    "OpenAIClient",
-    "OpenAICompatibleClient",
-    "AnthropicClient",
-    "GeminiClient",
-]
+# Side-effect imports: each registers itself via @register_model.
+from jarvis.models.base import register_model, get_model_class  # noqa: F401
+from jarvis.models.openai import OpenAIClient  # noqa: F401
+from jarvis.models.openai_compatible import OpenAICompatibleClient  # noqa: F401
+from jarvis.models.anthropic import AnthropicClient  # noqa: F401
+from jarvis.models.gemini import GeminiClient  # noqa: F401

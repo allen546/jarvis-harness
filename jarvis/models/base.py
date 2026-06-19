@@ -127,8 +127,3 @@ class BaseModelClient:
 
     async def generate_stream(self, messages: list[Message], tools: list[Any]) -> AsyncGenerator[ModelResponse, None]:
         raise NotImplementedError
-        if False:  # pragma: no cover
-            yield  # type: ignore[misc]
-
-
-
