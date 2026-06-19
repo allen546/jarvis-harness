@@ -21,3 +21,9 @@ Remember user preferences, past decisions, and recurring tasks.
 {% if mcp_servers %}External services ({{ mcp_servers | join(', ') }}) are available via MCP.
 When you need one, call load_mcp first to connect, then use the tools it exposes.
 {% endif %}
+
+{% if workspace %}
+## Workspace
+Files (screenshots, downloads) are saved to: {{ workspace }}
+Use this path when referencing files in tool calls.
+{% endif %}

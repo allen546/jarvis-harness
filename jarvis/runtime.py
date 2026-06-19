@@ -64,7 +64,8 @@ def render_system_prompt(template: str | None, root: str = ".", template_file: s
         except Exception:
             pass
     tmpl = env.from_string(template)
-    return tmpl.render(skills=skills, mcp_servers=mcp_servers)
+    workspace = os.environ.get("PLAYWRIGHT_WORKSPACE", "")
+    return tmpl.render(skills=skills, mcp_servers=mcp_servers, workspace=workspace)
 
 
 @dataclass(slots=True)
