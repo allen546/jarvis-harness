@@ -25,13 +25,46 @@ def _attachment_to_content_block(att: Attachment) -> dict[str, Any] | None:
     return None
 
 
+def _attachment_tag(att: Attachment, index: int) -> str:
+    """Generate a textual tag like <image-1:photo.jpg:10.2KB> or <sticker-1:38.1KB>."""
+    name = att.description or "unknown"
+    mime = att.mime_type
+    media = mime.split("/")[0] if "/" in mime else mime
+    size_bytes = 0
+    if att.url and "," in att.url:
+        size_bytes = len(att.url.split(",", 1)[1]) * 3 // 4  # base64 → bytes estimate
+    if size_bytes >= 1024 * 1024:
+        size_str = f"{size_bytes / (1024 * 1024):.1f}MB"
+    elif size_bytes >= 1024:
+        size_str = f"{size_bytes / 1024:.1f}KB"
+    else:
+        size_str = f"{size_bytes}B"
+    # Use semantic name as prefix when description is a label (e.g. "sticker"),
+    # otherwise use MIME media type with filename
+    if name in ("sticker",):
+        return f"<{name}-{index}:{size_str}>"
+    return f"<{media}-{index}:{name}:{size_str}>"
+
+
 def _build_openai_content(m: Message) -> str | list[dict[str, Any]]:
-    """Build OpenAI content field: plain string when no attachments, content blocks otherwise."""
+    """Build OpenAI content field: plain string when no attachments, content blocks otherwise.
+
+    When attachments are present, the text content is prefixed with index-aware
+    tags like ``<image-1:photo.jpg:10.2KB>`` so the model knows what it received
+    and can reference each attachment by name.
+    """
     if not m.attachments:
         return m.content
     blocks: list[dict[str, Any]] = []
-    if m.content:
-        blocks.append({"type": "text", "text": m.content})
+    # Prefix text with attachment tags for model awareness
+    tags = " ".join(
+        _attachment_tag(att, i + 1) for i, att in enumerate(m.attachments)
+    )
+    text = m.content or ""
+    if text:
+        blocks.append({"type": "text", "text": f"{tags}\n{text}"})
+    else:
+        blocks.append({"type": "text", "text": tags})
     for att in m.attachments:
         block = _attachment_to_content_block(att)
         if block:

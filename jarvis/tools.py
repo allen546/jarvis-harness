@@ -148,11 +148,12 @@ def builtin_tools(root: Path | str = ".") -> list[Tool]:
                 data_uri = to_data_uri(raw, mime)
                 start_s = chunk_idx * chunk_secs
                 end_s = min(start_s + chunk_secs, int(duration))
-                header = f"[{media_type} {start_s:.1f}s-{end_s:.1f}s of {duration:.1f}s | chunk {chunk_idx}/{chunks-1}]\n"
+                size_kb = len(raw) / 1024
+                tag = f"<{media_type}-{chunk_idx + 1}:{target.name}:{size_kb:.1f}KB {start_s:.1f}s-{end_s:.1f}s>"
                 footer = f"\n---\nread(path=\"{target.name}\", chunk={chunk_idx + 1}) → next chunk" if chunk_idx + 1 < chunks else ""
                 return ToolResult(
                     call_id="", tool_name="read",
-                    content=header + footer,
+                    content=tag + footer,
                     attachments=[Attachment(mime_type=mime, url=data_uri, description=target.name)],
                 )
             except Exception as exc:
@@ -163,9 +164,11 @@ def builtin_tools(root: Path | str = ".") -> list[Tool]:
                 enforce_size_limit(len(raw), 10)
                 mime = get_mime_type("image", target)
                 data_uri = to_data_uri(raw, mime)
+                size_kb = len(raw) / 1024
+                tag = f"<image-1:{target.name}:{size_kb:.1f}KB>"
                 return ToolResult(
                     call_id="", tool_name="read",
-                    content=f"Image: {target.name} ({len(raw)} bytes)",
+                    content=tag,
                     attachments=[Attachment(mime_type=mime, url=data_uri, description=target.name)],
                 )
             except Exception as exc:

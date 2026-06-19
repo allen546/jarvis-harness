@@ -60,10 +60,11 @@ class QQBot(botpy.Client):
         from jarvis.media import to_data_uri
 
         content = (message.content or "").strip()
-        if not content:
-            return
         openid = message.author.user_openid
-        logger.info("qq: C2C DM from %s: %s", openid, content[:80])
+        botpy_attachments = getattr(message, "attachments", None) or []
+        if not content and not botpy_attachments:
+            return
+        logger.info("qq: C2C DM from %s (%d attachments): %s", openid, len(botpy_attachments), content[:80] or "[no text]")
         if self._allowed_senders is not None and openid not in self._allowed_senders:
             logger.warning("qq: rejected DM from unauthorized sender %s", openid)
             await message._api.post_c2c_message(
@@ -71,10 +72,14 @@ class QQBot(botpy.Client):
                 markdown={"content": "Unauthorized."}, msg_id=message.id,
             )
             return
+        # Detect sticker/emoji: QQ encodes these as <faceType=N,...> in content
+        is_sticker = content.startswith("<faceType")
+        if is_sticker:
+            # Strip the face tag from content — it's metadata, not user text
+            content = ""
 
         # Build attachments from botpy message attachments
         attachments: list[Attachment] = []
-        botpy_attachments = getattr(message, "attachments", None) or []
         for att in botpy_attachments:
             att_url = getattr(att, "url", None)
             if att_url:
@@ -82,11 +87,14 @@ class QQBot(botpy.Client):
                 if self._media_supported(mime):
                     data = await self._download(att_url)
                     if data and len(data) <= self._max_download_bytes:
+                        filename = getattr(att, "filename", None) or "sticker.jpg"
                         attachments.append(Attachment(
                             mime_type=mime,
                             url=to_data_uri(data, mime),
-                            description=getattr(att, "filename", None),
+                            description="sticker" if is_sticker else filename,
                         ))
+        if botpy_attachments:
+            logger.info("qq: downloaded %d/%d attachments (sticker=%s)", len(attachments), len(botpy_attachments), is_sticker)
 
         jarvis_msg = Message(role="user", content=content, attachments=attachments)
 
