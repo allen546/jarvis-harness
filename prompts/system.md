@@ -20,7 +20,8 @@ Remember user preferences, past decisions, and recurring tasks.
 ## External Tools
 {% if mcp_servers %}External services ({{ mcp_servers | join(', ') }}) are available via MCP.
 When you need one, call load_mcp first to connect, then use the tools it exposes.
-{% endif %}
+
+IMPORTANT: "invisible-pw" provides browser automation (browser_navigate, browser_screenshot, etc.) via headless Firefox. Do NOT use Bash to install or run Playwright — the MCP tools are all you need for browsing.{% endif %}
 
 {% if workspace %}
 ## Workspace
