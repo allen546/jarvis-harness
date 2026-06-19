@@ -11,6 +11,7 @@ from jarvis.models.base import Message
 
 logger = logging.getLogger(__name__)
 
+_bot_api: Any = None  # botpy BotAPI, set on ready for send_file
 
 class QQBot(botpy.Client):
     """Inbound QQ bot — handles C2C DMs only."""
@@ -52,6 +53,8 @@ class QQBot(botpy.Client):
         return False
 
     async def on_ready(self) -> None:
+        global _bot_api
+        _bot_api = self._api
         logger.info("qq: bot ready as %s", self.robot.name)
 
     async def on_c2c_message_create(self, message: BotpyMessage) -> None:
@@ -215,3 +218,18 @@ class QQChannel:
                 await asyncio.sleep(1)
         except asyncio.CancelledError:
             logger.info("qq: channel cancelled")
+
+async def qq_send_c2c_file(openid: str, file_data_b64: str, file_type: int) -> str:
+    """Upload a file and send it via botpy's authenticated API."""
+    if _bot_api is None:
+        raise RuntimeError("QQ bot not ready")
+    # Upload file (QQ API supports file_data as base64)
+    route = botpy.Route("POST", "/v2/users/{openid}/files", openid=openid)
+    upload_resp = await _bot_api._http.request(
+        route, json={"file_data": file_data_b64, "file_type": file_type}
+    )
+    # Send media message
+    await _bot_api.post_c2c_message(
+        openid=openid, msg_type=7, media=upload_resp,
+    )
+    return "ok"

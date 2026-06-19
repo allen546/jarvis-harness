@@ -411,7 +411,6 @@ def builtin_tools(root: Path | str = ".") -> list[Tool]:
             return f"Error: file not found: {target}"
         file_type = args.get("file_type")
         media_type = detect_media_type(target)
-        mime = get_mime_type(media_type, target)
         if file_type is None:
             type_map = {"image": 1, "video": 2, "audio": 3, "document": 1, "text": 1}
             file_type = type_map.get(media_type, 1)
@@ -427,26 +426,8 @@ def builtin_tools(root: Path | str = ".") -> list[Tool]:
         if not session_id.startswith("qq_c2c_"):
             return "Error: send_file can only be used in QQ C2C sessions"
         openid = session_id[len("qq_c2c_"):]
-        import httpx
-        api_base = "https://api.senvr.net"
-        async with httpx.AsyncClient() as client:
-            files_resp = await client.post(
-                f"{api_base}/openapi/v2/users/{openid}/files",
-                json={"file_data": b64, "file_type": file_type},
-            )
-            if files_resp.status_code != 200:
-                return f"Error uploading file: {files_resp.status_code} {files_resp.text}"
-            file_info = files_resp.json().get("data", {})
-            media_resp = await client.post(
-                f"{api_base}/openapi/v2/users/{openid}/messages",
-                json={
-                    "msg_type": 7,
-                    "markdown": {},
-                    "media": file_info,
-                },
-            )
-            if media_resp.status_code != 200:
-                return f"Error sending media: {media_resp.status_code} {media_resp.text}"
+        from jarvis.transports.qq import qq_send_c2c_file
+        await qq_send_c2c_file(openid, b64, file_type)
         return f"Sent file: {target.name} ({len(raw)} bytes)"
 
     return [
