@@ -4,14 +4,23 @@ import asyncio
 import logging
 import threading
 from typing import Any, Awaitable, Callable
+from pathlib import Path
 
 import botpy
 from botpy.message import Message as BotpyMessage
 from jarvis.models.base import Message
 
+# Monkey-patch botpy Message._Attachments to preserve raw JSON dict
+_old_attachments_init = botpy.message.Message._Attachments.__init__
+def _new_attachments_init(self, data):
+    _old_attachments_init(self, data)
+    self._raw_data = data
+botpy.message.Message._Attachments.__init__ = _new_attachments_init
+
 logger = logging.getLogger(__name__)
 
 _bot_api: Any = None  # botpy BotAPI, set on ready for send_file
+_bot_loop: asyncio.AbstractEventLoop | None = None  # bot thread's event loop
 
 class QQBot(botpy.Client):
     """Inbound QQ bot — handles C2C DMs only."""
@@ -53,8 +62,9 @@ class QQBot(botpy.Client):
         return False
 
     async def on_ready(self) -> None:
-        global _bot_api
-        _bot_api = self._api
+        global _bot_api, _bot_loop
+        _bot_api = self.api
+        _bot_loop = asyncio.get_running_loop()
         logger.info("qq: bot ready as %s", self.robot.name)
 
     async def on_c2c_message_create(self, message: BotpyMessage) -> None:
@@ -81,8 +91,11 @@ class QQBot(botpy.Client):
                     _raw[k] = v
                 except (TypeError, ValueError):
                     pass
-            with open("/home/allen/jarvis/qq_raw_debug.json", "w") as _f:
-                _json.dump(_raw, _f, ensure_ascii=False, indent=2)
+            try:
+                with open("qq_raw_debug.json", "w") as _f:
+                    _json.dump(_raw, _f, ensure_ascii=False, indent=2)
+            except Exception as exc:
+                logger.debug("qq: failed to write raw debug file: %s", exc)
         if self._allowed_senders is not None and openid not in self._allowed_senders:
             logger.warning("qq: rejected DM from unauthorized sender %s", openid)
             await message._api.post_c2c_message(
@@ -98,6 +111,7 @@ class QQBot(botpy.Client):
 
         # Build attachments from botpy message attachments
         attachments: list[Attachment] = []
+        asr_text = None
         for att in botpy_attachments:
             att_url = getattr(att, "url", None)
             if att_url:
@@ -106,15 +120,32 @@ class QQBot(botpy.Client):
                     data = await self._download(att_url)
                     if data and len(data) <= self._max_download_bytes:
                         filename = getattr(att, "filename", None) or "sticker.jpg"
+                        if mime == "voice":
+                            try:
+                                from jarvis.media import transcode_amr_to_mp3
+                                mp3_data = transcode_amr_to_mp3(data)
+                                url = to_data_uri(mp3_data, "audio/mpeg")
+                                filename = Path(filename).with_suffix(".mp3").name
+                            except Exception as exc:
+                                logger.error("qq: voice transcoding failed: %s", exc)
+                                url = to_data_uri(data, mime)
+                            
+                            # Extract platform ASR text from _raw_data key "asr_refer_text" (if any)
+                            raw_data = getattr(att, "_raw_data", None) or {}
+                            if isinstance(raw_data, dict):
+                                asr_text = raw_data.get("asr_refer_text")
+                        else:
+                            url = to_data_uri(data, mime)
+
                         attachments.append(Attachment(
                             mime_type=mime,
-                            url=to_data_uri(data, mime),
+                            url=url,
                             description="sticker" if is_sticker else filename,
                         ))
         if botpy_attachments:
             logger.info("qq: downloaded %d/%d attachments (sticker=%s)", len(attachments), len(botpy_attachments), is_sticker)
 
-        jarvis_msg = Message(role="user", content=content, attachments=attachments)
+        jarvis_msg = Message(role="user", content=content, attachments=attachments, metadata={"asr_text": asr_text})
 
         try:
             reply_msg = await self._on_message(f"qq_c2c_{openid}", jarvis_msg)
@@ -123,10 +154,20 @@ class QQBot(botpy.Client):
             logger.error("qq: C2C handler error: %s", exc)
             reply_text = f"[error] {exc}"
 
-        await message._api.post_c2c_message(
-            openid=openid, msg_type=2,
-            markdown={"content": reply_text}, msg_id=message.id,
-        )
+        try:
+            await message._api.post_c2c_message(
+                openid=openid, msg_type=2,
+                markdown={"content": reply_text}, msg_id=message.id,
+            )
+        except botpy.errors.ServerError as exc:
+            if "markdown" in str(exc).lower():
+                logger.warning("qq: invalid markdown content, falling back to plaintext mode: %s", exc)
+                await message._api.post_c2c_message(
+                    openid=openid, msg_type=0,
+                    content=reply_text, msg_id=message.id,
+                )
+            else:
+                raise
 
 
 class QQChannel:
@@ -220,16 +261,25 @@ class QQChannel:
             logger.info("qq: channel cancelled")
 
 async def qq_send_c2c_file(openid: str, file_data_b64: str, file_type: int) -> str:
-    """Upload a file and send it via botpy's authenticated API."""
-    if _bot_api is None:
+    """Upload a file and send it via botpy's authenticated API.
+
+    botpy's aiohttp session lives on the bot thread's event loop, so we
+    dispatch the actual HTTP calls there via run_coroutine_threadsafe.
+    """
+    if _bot_api is None or _bot_loop is None:
         raise RuntimeError("QQ bot not ready")
-    # Upload file (QQ API supports file_data as base64)
-    route = botpy.Route("POST", "/v2/users/{openid}/files", openid=openid)
-    upload_resp = await _bot_api._http.request(
-        route, json={"file_data": file_data_b64, "file_type": file_type}
-    )
-    # Send media message
-    await _bot_api.post_c2c_message(
-        openid=openid, msg_type=7, media=upload_resp,
-    )
-    return "ok"
+    import concurrent.futures
+    from botpy.http import Route
+
+    async def _upload_and_send() -> str:
+        route = Route("POST", "/v2/users/{openid}/files", openid=openid)
+        upload_resp = await _bot_api._http.request(
+            route, json={"file_data": file_data_b64, "file_type": file_type}
+        )
+        await _bot_api.post_c2c_message(
+            openid=openid, msg_type=7, media=upload_resp,
+        )
+        return "ok"
+
+    fut = asyncio.run_coroutine_threadsafe(_upload_and_send(), _bot_loop)
+    return await asyncio.wrap_future(fut)

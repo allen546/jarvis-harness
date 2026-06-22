@@ -54,6 +54,7 @@ async def execute_session_turn(session_id: str, request: TurnRequest) -> TurnRes
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
+        logger.exception("Uncaught exception in execute_session_turn:")
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
@@ -115,7 +116,68 @@ async def main() -> None:
     qq_channel: QQChannel | None = None
     if config.channels.qq.enabled:
         async def _qq_handler(session_id: str, message: Message) -> Message:
-            return await _manager.submit_and_collect(session_id, message)
+            # Check if there is a voice attachment
+            has_voice = any(att.mime_type == "voice" for att in message.attachments)
+            if not has_voice:
+                return await _manager.submit_and_collect(session_id, message)
+
+            session = _manager.get_or_create(session_id)
+
+            # Tier 1: Native Audio
+            logger.info("qq_handler: Tier 1: attempting native audio turn")
+            try:
+                return await _manager.submit_and_collect(session_id, message)
+            except Exception as exc:
+                logger.warning("qq_handler: Tier 1 failed: %s", exc)
+                # Clean up turn history
+                if session.ctx.session.history and session.ctx.session.history[-1] is message:
+                    session.ctx.session.history.pop()
+
+            # Tier 2: Platform ASR
+            asr_text = message.metadata.get("asr_text") if message.metadata else None
+            if asr_text:
+                logger.info("qq_handler: Tier 2: retrying with platform ASR: %r", asr_text)
+                asr_message = Message(role="user", content=asr_text, metadata=message.metadata)
+                try:
+                    return await _manager.submit_and_collect(session_id, asr_message)
+                except Exception as exc:
+                    logger.warning("qq_handler: Tier 2 failed: %s", exc)
+                    # Clean up turn history
+                    if session.ctx.session.history and session.ctx.session.history[-1] is asr_message:
+                        session.ctx.session.history.pop()
+            else:
+                logger.info("qq_handler: Tier 2 skipped (no platform ASR text)")
+
+            # Tier 3: Local Whisper
+            logger.info("qq_handler: Tier 3: attempting local Whisper transcription")
+            voice_att = next(att for att in message.attachments if att.mime_type == "voice")
+            mp3_bytes = None
+            if voice_att.url and "," in voice_att.url:
+                try:
+                    import base64
+                    b64_data = voice_att.url.split(",", 1)[1]
+                    mp3_bytes = base64.b64decode(b64_data)
+                except Exception as exc:
+                    logger.error("qq_handler: failed to decode voice attachment url: %s", exc)
+
+            if mp3_bytes:
+                try:
+                    from jarvis.media import transcribe_locally
+                    local_text = transcribe_locally(mp3_bytes)
+                    logger.info("qq_handler: local transcription result: %r", local_text)
+                    if local_text:
+                        whisper_message = Message(role="user", content=local_text, metadata=message.metadata)
+                        try:
+                            return await _manager.submit_and_collect(session_id, whisper_message)
+                        except Exception as exc:
+                            logger.error("qq_handler: Tier 3 failed: %s", exc)
+                            # Clean up turn history
+                            if session.ctx.session.history and session.ctx.session.history[-1] is whisper_message:
+                                session.ctx.session.history.pop()
+                except Exception as exc:
+                    logger.error("qq_handler: Tier 3 local Whisper failed: %s", exc)
+
+            raise RuntimeError("QQ voice message turn failed across all tiers.")
 
         qq_channel = QQChannel(
             app_id=config.channels.qq.app_id,

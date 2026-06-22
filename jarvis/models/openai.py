@@ -16,9 +16,17 @@ def _attachment_to_content_block(att: Attachment) -> dict[str, Any] | None:
         return None
     if mime.startswith("image/"):
         return {"type": "image_url", "image_url": {"url": url}}
-    if mime.startswith("audio/"):
+    if mime == "voice":
         b64 = url.split(",", 1)[1] if "," in url else ""
-        fmt = mime.split("/", 1)[1].split(";")[0]
+        import re
+        m = re.match(r"^data:audio/([^;]+);base64,", url)
+        fmt = "mp3"
+        if m:
+            raw_fmt = m.group(1)
+            if raw_fmt in ("mpeg", "mp3"):
+                fmt = "mp3"
+            elif raw_fmt in ("wav", "x-wav"):
+                fmt = "wav"
         return {"type": "input_audio", "input_audio": {"data": b64, "format": fmt}}
     if mime.startswith("video/"):
         return {"type": "video_url", "video_url": {"url": url}}

@@ -114,11 +114,16 @@ def test_multimodal_content_blocks():
     block = _attachment_to_content_block(img)
     assert block == {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,abc"}}
 
+    # audio/mpeg should return None (not sent directly)
     audio = Attachment(mime_type="audio/mpeg", url="data:audio/mpeg;base64,xyz")
-    block = _attachment_to_content_block(audio)
+    assert _attachment_to_content_block(audio) is None
+
+    # voice should return input_audio
+    voice = Attachment(mime_type="voice", url="data:audio/mpeg;base64,xyz")
+    block = _attachment_to_content_block(voice)
     assert block["type"] == "input_audio"
     assert block["input_audio"]["data"] == "xyz"
-    assert block["input_audio"]["format"] == "mpeg"
+    assert block["input_audio"]["format"] == "mp3"
 
     video = Attachment(mime_type="video/mp4", url="http://example.com/v.mp4")
     block = _attachment_to_content_block(video)
