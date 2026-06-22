@@ -623,6 +623,7 @@ dependencies = [
     { name = "croniter" },
     { name = "discord-py" },
     { name = "faster-whisper" },
+    { name = "httpx" },
     { name = "jinja2" },
     { name = "mcp" },
     { name = "openai" },
@@ -635,7 +636,6 @@ dependencies = [
 dev = [
     { name = "aiofiles" },
     { name = "fastapi" },
-    { name = "httpx" },
     { name = "pydantic" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
@@ -648,6 +648,7 @@ requires-dist = [
     { name = "croniter", specifier = ">=6.2.2" },
     { name = "discord-py", specifier = ">=2.4.0" },
     { name = "faster-whisper", specifier = ">=1.0.3" },
+    { name = "httpx", specifier = ">=0.28.1" },
     { name = "jinja2", specifier = ">=3.1.0" },
     { name = "mcp", specifier = ">=1.27.2" },
     { name = "openai", specifier = ">=1.50.0" },
@@ -660,7 +661,6 @@ requires-dist = [
 dev = [
     { name = "aiofiles", specifier = ">=25.1.0" },
     { name = "fastapi", specifier = ">=0.137.1" },
-    { name = "httpx", specifier = ">=0.28.1" },
     { name = "pydantic", specifier = ">=2.13.4" },
     { name = "pytest", specifier = ">=9.1.0" },
     { name = "pytest-asyncio", specifier = ">=1.4.0" },
