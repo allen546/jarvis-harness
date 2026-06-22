@@ -170,3 +170,33 @@ def test_get_mime_type():
     assert get_mime_type("image", Path("photo.png")) == "image/png"
     assert get_mime_type("audio", Path("song.mp3")) == "audio/mpeg"
     assert get_mime_type("video", Path("clip.mp4")) == "video/mp4"
+
+
+def test_transcode_amr_to_mp3(monkeypatch):
+    import subprocess
+    class MockCompletedProcess:
+        returncode = 0
+        stdout = b"mock-mp3-bytes"
+    monkeypatch.setattr(subprocess, "run", lambda *args, **kwargs: MockCompletedProcess())
+    from jarvis.media import transcode_amr_to_mp3
+    res = transcode_amr_to_mp3(b"mock-amr-bytes")
+    assert res == b"mock-mp3-bytes"
+
+def test_transcribe_locally_mocked(monkeypatch):
+    class MockSegment:
+        text = "hello world"
+    class MockWhisperModel:
+        def __init__(self, *args, **kwargs):
+            pass
+        def transcribe(self, *args, **kwargs):
+            return [MockSegment()], None
+    
+    import sys
+    from types import ModuleType
+    fw = ModuleType("faster_whisper")
+    fw.WhisperModel = MockWhisperModel
+    sys.modules["faster_whisper"] = fw
+    
+    from jarvis.media import transcribe_locally
+    res = transcribe_locally(b"mock-audio-bytes")
+    assert res == "hello world"

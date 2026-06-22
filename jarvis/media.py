@@ -171,3 +171,27 @@ def get_media_info(path: Path) -> dict:
         info["size_bytes"] = path.stat().st_size
 
     return info
+
+
+def transcode_amr_to_mp3(data: bytes) -> bytes:
+    import subprocess
+    cmd = ["ffmpeg", "-y", "-f", "amr", "-i", "pipe:0", "-f", "mp3", "pipe:1"]
+    result = subprocess.run(cmd, input=data, capture_output=True, timeout=30)
+    if result.returncode != 0:
+        raise RuntimeError(f"ffmpeg failed: {result.stderr.decode("utf-8", errors="replace")}")
+    return result.stdout
+
+def transcribe_locally(audio_bytes: bytes) -> str:
+    import tempfile
+    from pathlib import Path
+    from faster_whisper import WhisperModel
+    with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as tf:
+        tf.write(audio_bytes)
+        temp_path = Path(tf.name)
+    try:
+        model = WhisperModel("tiny", device="cpu", compute_type="int8")
+        segments, _ = model.transcribe(str(temp_path), beam_size=5)
+        return "".join(segment.text for segment in segments)
+    finally:
+        if temp_path.exists():
+            temp_path.unlink()
