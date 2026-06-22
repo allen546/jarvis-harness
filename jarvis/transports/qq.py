@@ -117,13 +117,26 @@ class QQBot(botpy.Client):
             if att_url:
                 mime = getattr(att, "content_type", None) or "application/octet-stream"
                 if self._media_supported(mime):
+                    # For voice, prefer voice_wav_url if present
+                    raw_data = getattr(att, "_raw_data", None) or {}
+                    is_wav = False
+                    if mime == "voice" and isinstance(raw_data, dict):
+                        voice_wav_url = raw_data.get("voice_wav_url")
+                        if voice_wav_url:
+                            att_url = voice_wav_url
+                            is_wav = True
+                    
                     data = await self._download(att_url)
                     if data and len(data) <= self._max_download_bytes:
                         filename = getattr(att, "filename", None) or "sticker.jpg"
                         if mime == "voice":
                             try:
-                                from jarvis.media import transcode_amr_to_mp3
-                                mp3_data = transcode_amr_to_mp3(data)
+                                if is_wav:
+                                    from jarvis.media import transcode_wav_to_mp3
+                                    mp3_data = transcode_wav_to_mp3(data)
+                                else:
+                                    from jarvis.media import transcode_amr_to_mp3
+                                    mp3_data = transcode_amr_to_mp3(data)
                                 url = to_data_uri(mp3_data, "audio/mpeg")
                                 filename = Path(filename).with_suffix(".mp3").name
                             except Exception as exc:
@@ -131,7 +144,6 @@ class QQBot(botpy.Client):
                                 url = to_data_uri(data, mime)
                             
                             # Extract platform ASR text from _raw_data key "asr_refer_text" (if any)
-                            raw_data = getattr(att, "_raw_data", None) or {}
                             if isinstance(raw_data, dict):
                                 asr_text = raw_data.get("asr_refer_text")
                         else:
