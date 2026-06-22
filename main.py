@@ -94,6 +94,10 @@ async def main() -> None:
     if p.no_proxy:
         proxy_env["NO_PROXY"] = p.no_proxy
         proxy_env["no_proxy"] = p.no_proxy
+    import os
+    for k, v in proxy_env.items():
+        if isinstance(v, str):
+            os.environ[k] = v
     _manager = SessionManager(proxy_env=proxy_env)
 
     # --- gateway daemon thread ---
